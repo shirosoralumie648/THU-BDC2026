@@ -12,7 +12,7 @@ import pandas as pd
 DATA_ROOT_PATH = Path("./")
 TEST_DIR = DATA_ROOT_PATH / "test"
 TEMP_DIR = DATA_ROOT_PATH / "temp"
-OUTPUT_DIR = DATA_ROOT_PATH / "output"
+OUTPUT_DIR = TEST_DIR / "output"
 RESULTS_OUTPUT_DIR = TEST_DIR / "results_output"
 
 
@@ -82,7 +82,7 @@ def run_docker_compose_up(tar_name: str, timeout_seconds: int = 60 * 60 * 8) -> 
 	print("DOWN docker compose.")
 
 	RESULTS_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-	src = OUTPUT_DIR / "output.csv"
+	src = OUTPUT_DIR / "result.csv"
 	dst = RESULTS_OUTPUT_DIR / f"{tar_name}.csv"
 	shutil.copy2(src, dst)
 	print(f"Copied output to {dst}")
@@ -90,13 +90,16 @@ def run_docker_compose_up(tar_name: str, timeout_seconds: int = 60 * 60 * 8) -> 
 
 def run_score(file_name: str) -> None:
 	team_name = Path(file_name).stem
-	command = [sys.executable, "test/score.py", team_name]
+	command = [sys.executable, "test/score_docker.py", team_name]
 	subprocess.run(command, check=True)
-	print("Started score.py")
+	print("Started score_docker.py")
 
 	df1 = pd.read_csv("./temp/tmp.csv")
 	print(df1)
-	df2 = pd.read_csv("./test/result.csv")
+	try:
+		df2 = pd.read_csv("./test/result.csv")
+	except FileNotFoundError:
+		df2 = pd.DataFrame(columns=["Team Name", "Final Score"])
 
 	df_combined = pd.concat([df2, df1], ignore_index=True)
 	df_combined.to_csv("./test/result.csv", mode="w", index=False)

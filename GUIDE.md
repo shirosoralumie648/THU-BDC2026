@@ -16,7 +16,7 @@ linux
 
 windows
 
-`\.venv\Script\activate`
+`.\.venv\Scripts\activate`
 
 成功激活
 
@@ -31,7 +31,7 @@ end_date = "***"
 ```
 运行`python get_stock_data.py`即可下载所需时间段的数据，默认保存为data/stock_data.csv
 
-（如果出现网络问题，请关闭代理重试）
+（如果出现网络问题，请关闭代理重试，多尝试几次）
 
 成功下载数据
 
@@ -51,11 +51,15 @@ end_date = "***"
 
 训练：运行根目录下的sh train.sh
 
+windows可以直接运行`python code/src/train.py`
+
 成功完成训练
 
 <img src="./asset/train.png" alt="train" width="50%">
 
 预测：运行根目录下的sh test.sh
+
+windows可以直接运行`python code/src/predict.py`
 
 成功完成预测
 
@@ -76,7 +80,7 @@ end_date = "***"
 
 ## docker镜像创建
 
-如果出现网络请求错误，请尝试使用代理或关闭代理。
+如果出现网络请求错误，请尝试使用代理或关闭代理。或者参考[本文](https://blog.csdn.net/m0_70878103/article/details/144130047)
 
 镜像创建指令：
 `docker buildx build  --platform linux/amd64  --build-arg IMAGE_NAME=nvidia/cuda  -t bdc2026 .`
