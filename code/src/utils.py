@@ -29,7 +29,8 @@ def engineer_features_158plus39(df):
         'volume_change', 'obv', 'volume_ma_5', 'volume_ma_20', 'volume_ratio', 
         'kdj_k', 'kdj_d', 'kdj_j', 'boll_mid', 'boll_std', 'atr_14', 'ema_60', 
         'volatility_10', 'volatility_20', 'return_1', 'return_5', 'return_10',  
-        'high_low_spread', 'open_close_spread', 'high_close_spread', 'low_close_spread'
+        'high_low_spread', 'open_close_spread', 'high_close_spread', 'low_close_spread',
+        'mom_acc', 'pv_div', 'consecutive_pos'
     ]
     
     # 确保所有列都存在于df_39中
@@ -123,6 +124,16 @@ def engineer_features_39(df):
     df['open_close_spread'] = open_ - close
     df['high_close_spread'] = high - close
     df['low_close_spread'] = low - close
+
+    # 新增“高弹性/高博弈”因子
+    # 动量加速因子 (Momentum Acceleration)： 过去3天的涨幅 - 过去10天的涨幅
+    df['mom_acc'] = close.pct_change(3) - close.pct_change(10)
+    
+    # 量价背离极致因子： (最高价 - 开盘价) / 成交量
+    df['pv_div'] = (high - open_) / (volume + 1e-12)
+    
+    # 连续阳线特征： 过去5天收盘价高于开盘价的天数
+    df['consecutive_pos'] = (close > open_).rolling(5).sum()
 
     # 处理 inf 和 -inf
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
