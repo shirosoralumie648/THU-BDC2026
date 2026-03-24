@@ -100,13 +100,15 @@ class WeightedRankingLoss(nn.Module):
     """
     组合的加权排序损失函数，着重强调top-k的样本。
     """
-    def __init__(self, temperature=1.0, k=5, weight_factor=2.0, pairwise_weight=1, base_weight=1.0):
+    def __init__(self, temperature=1.0, k=5, weight_factor=2.0, pairwise_weight=1, base_weight=1.0, tail_multiplier=10.0, tail_percentile=0.95):
         super(WeightedRankingLoss, self).__init__()
         self.temperature = temperature
         self.k = k
         self.weight_factor = weight_factor
         self.pairwise_weight = pairwise_weight
         self.base_weight = base_weight
+        self.tail_multiplier = tail_multiplier
+        self.tail_percentile = tail_percentile
 
     def listwise_loss(self, y_pred, y_true, weights):
         """加权的Listwise损失 (KL散度 + Cross Entropy)"""
@@ -153,13 +155,22 @@ class WeightedRankingLoss(nn.Module):
         batch_size, num_items = y_true.size()
         k = min(self.k, num_items)
 
-        # 1. 识别 top-k 的样本
+        # 1. 识别 top-k 的样本 (保持原有逻辑，针对每组内部排序)
         _, top_indices = torch.topk(y_true, k, dim=1)
         
         # 2. 创建权重向量
         weights = torch.full_like(y_true, fill_value=self.base_weight)
         for i in range(batch_size):
             weights[i, top_indices[i]] = self.weight_factor
+            
+            # 3. 增强右尾数据权重 (基于绝对收益率)
+            # 计算该 batch 的右尾阈值
+            valid_y = y_true[i]
+            if valid_y.numel() > 0:
+                threshold = torch.quantile(valid_y, self.tail_percentile)
+                tail_mask = valid_y >= threshold
+                # 将右尾数据的权重乘以 tail_multiplier
+                weights[i, tail_mask] *= self.tail_multiplier
             
         # 3. 计算加权损失
         listwise = self.listwise_loss(y_pred, y_true, weights)
@@ -643,7 +654,9 @@ def main():
         temperature=1.0,
         weight_factor=config['top5_weight'],
         pairwise_weight=config['pairwise_weight'],
-        base_weight=config.get('base_weight', 1.0)
+        base_weight=config.get('base_weight', 1.0),
+        tail_multiplier=config.get('tail_multiplier', 10.0),
+        tail_percentile=config.get('tail_percentile', 0.95)
     )  # 使用加权排序损失
     optimizer = torch.optim.AdamW(model.parameters(), lr=config['learning_rate'], weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.2, total_iters=config['num_epochs'])

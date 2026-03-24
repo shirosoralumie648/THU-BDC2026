@@ -17,6 +17,8 @@ config = {
     'pairwise_weight': 1, # 配对损失权重
     'base_weight': 1.0, # 非top-k样本权重
     'top5_weight': 2.0, # top-5样本权重（应大于base_weight）
+    'tail_multiplier': 10.0, # 右尾数据收益增强倍数
+    'tail_percentile': 0.95, # 右尾数据分位数定义
 
     'output_dir': f'./model/{sequence_length}_{feature_num}',
     'data_path': './data',

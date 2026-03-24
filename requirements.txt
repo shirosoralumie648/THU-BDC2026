@@ -1,0 +1,13 @@
+--extra-index-url https://download.pytorch.org/whl/cu128
+akshare>=1.18.28
+baostock>=0.8.9
+docker>=7.1.0
+joblib>=1.5.2
+pandas>=2.3.2
+scikit-learn>=1.7.2
+seaborn>=0.13.2
+ta-lib>=0.6.8
+tensorboard>=2.20.0
+tensorboardx>=2.6.4
+torch>=2.6.0
+tqdm>=4.67.1
