@@ -231,6 +231,7 @@ def calculate_ranking_metrics(y_pred, y_true, masks, k=5):
         final_score_list.append(final_score)
         
     metrics = {
+        'portfolio_return': np.mean(pred_return_sum_list) / k if pred_return_sum_list else 0.0,
         'pred_return_sum': np.mean(pred_return_sum_list) if pred_return_sum_list else 0.0,
         'max_return_sum': np.mean(max_return_sum_list) if max_return_sum_list else 0.0,
         'random_return_sum': np.mean(random_return_sum_list) if random_return_sum_list else 0.0,
@@ -256,10 +257,10 @@ class RankingDataset(torch.utils.data.Dataset):
     
     def __getitem__(self, idx):
         return {
-            'sequences': torch.FloatTensor(self.sequences[idx]),  # [num_stocks, seq_len, features]
-            'targets': torch.FloatTensor(self.targets[idx]),      # [num_stocks] 真实涨跌幅
-            'relevance': torch.LongTensor(self.relevance_scores[idx]),  # [num_stocks] 排序标签
-            'stock_indices': torch.LongTensor(self.stock_indices[idx])  # [num_stocks] 股票索引
+            'sequences': torch.FloatTensor(np.array(self.sequences[idx])),  # [num_stocks, seq_len, features]
+            'targets': torch.FloatTensor(np.array(self.targets[idx])),      # [num_stocks] 真实涨跌幅
+            'relevance': torch.LongTensor(np.array(self.relevance_scores[idx])),  # [num_stocks] 排序标签
+            'stock_indices': torch.LongTensor(np.array(self.stock_indices[idx]))  # [num_stocks] 股票索引
         }
 
 def collate_fn(batch):
@@ -693,8 +694,8 @@ def main():
                 writer.add_scalar('train/learning_rate', scheduler.get_last_lr()[0], global_step=epoch)
             
 
-            # 保存最佳模型（基于final score）
-            current_final_score = eval_metrics.get('final_score', 0.0)
+            # 保存最佳模型（基于 portfolio_return）
+            current_final_score = eval_metrics.get('portfolio_return', 0.0)
             if current_final_score > best_score:
                 best_score = current_final_score
                 best_epoch = epoch + 1

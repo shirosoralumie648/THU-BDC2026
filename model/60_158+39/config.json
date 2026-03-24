@@ -5,7 +5,7 @@
     "num_layers": 3,
     "dim_feedforward": 512,
     "batch_size": 4,
-    "num_epochs": 10,
+    "num_epochs": 50,
     "learning_rate": 1e-05,
     "dropout": 0.1,
     "feature_num": "158+39",
@@ -13,6 +13,8 @@
     "pairwise_weight": 1,
     "base_weight": 1.0,
     "top5_weight": 2.0,
+    "tail_multiplier": 10.0,
+    "tail_percentile": 0.95,
     "output_dir": "./model/60_158+39",
     "data_path": "./data"
 }

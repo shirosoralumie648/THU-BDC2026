@@ -18,7 +18,8 @@ feature_cloums_map = {
 		'sma_5', 'sma_20', 'ema_12', 'ema_26', 'rsi', 'macd', 'macd_signal', 'volume_change', 'obv',
 		'volume_ma_5', 'volume_ma_20', 'volume_ratio', 'kdj_k', 'kdj_d', 'kdj_j', 'boll_mid', 'boll_std',
 		'atr_14', 'ema_60', 'volatility_10', 'volatility_20', 'return_1', 'return_5', 'return_10',
-		'high_low_spread', 'open_close_spread', 'high_close_spread', 'low_close_spread'
+		'high_low_spread', 'open_close_spread', 'high_close_spread', 'low_close_spread',
+		'mom_acc', 'pv_div', 'consecutive_pos'
 	],
 	'158+39': [
 		'instrument', '开盘', '收盘', '最高', '最低', '成交量', '成交额', '振幅', '涨跌额', '换手率', '涨跌幅',
@@ -40,7 +41,8 @@ feature_cloums_map = {
 		'sma_5', 'sma_20', 'ema_12', 'ema_26', 'rsi', 'macd', 'macd_signal', 'volume_change', 'obv',
 		'volume_ma_5', 'volume_ma_20', 'volume_ratio', 'kdj_k', 'kdj_d', 'kdj_j', 'boll_mid', 'boll_std',
 		'atr_14', 'ema_60', 'volatility_10', 'volatility_20', 'return_1', 'return_5', 'return_10',
-		'high_low_spread', 'open_close_spread', 'high_close_spread', 'low_close_spread'
+		'high_low_spread', 'open_close_spread', 'high_close_spread', 'low_close_spread',
+		'mom_acc', 'pv_div', 'consecutive_pos'
 	]
 }
 
