@@ -1,10 +1,15 @@
 {
-    "name": "equal_top1",
-    "top_k": 1,
+    "name": "equal_top5",
+    "top_k": 5,
     "weighting": "equal",
     "temperature": 1.0,
-    "validation_return": 0.036867219083796955,
+    "validation_objective": 0.0012071341136857183,
+    "validation_return": 0.007342541779507883,
     "validation_mode": "rolling",
+    "strategy_selection_mode": "risk_adjusted",
+    "strategy_risk_lambda": 0.2,
+    "rank_ic_mean": 0.013220617283640842,
+    "rank_ic_ir": 0.4040177763118139,
     "validation_folds": [
         {
             "name": "fold_1",
@@ -27,5 +32,5 @@
             "end_date": "2026-02-27"
         }
     ],
-    "best_epoch": 4
+    "best_epoch": 3
 }

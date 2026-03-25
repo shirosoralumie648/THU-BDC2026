@@ -12,6 +12,7 @@ from factor_store import engineer_group_features
 from factor_store import resolve_factor_pipeline
 from factor_store import save_factor_snapshot
 from model import StockTransformer
+from utils import apply_cross_sectional_normalization
 from utils import create_ranking_dataset_vectorized
 import joblib
 import os
@@ -32,17 +33,20 @@ def set_seed(seed=42):
 
 def _build_label_and_clean(processed, drop_small_open=True):
     """统一构建标签并清洗无效样本。"""
-    processed['open_t1'] = processed.groupby('股票代码')['开盘'].shift(-1)
-    processed['open_t5'] = processed.groupby('股票代码')['开盘'].shift(-5)
+    processed = processed.copy()
+    processed.loc[:, 'open_t1'] = processed.groupby('股票代码')['开盘'].shift(-1)
+    processed.loc[:, 'open_t5'] = processed.groupby('股票代码')['开盘'].shift(-5)
 
     # 过滤无效开盘价，避免收益率极端爆炸
     if drop_small_open:
-        processed = processed[processed['open_t1'] > 1e-4]
+        processed = processed.loc[processed['open_t1'] > 1e-4].copy()
 
-    processed['label'] = (processed['open_t5'] - processed['open_t1']) / (processed['open_t1'] + 1e-12)
-    processed = processed.dropna(subset=['label'])
+    processed.loc[:, 'label'] = (
+        (processed['open_t5'] - processed['open_t1']) / (processed['open_t1'] + 1e-12)
+    )
+    processed = processed.dropna(subset=['label']).copy()
 
-    processed.drop(columns=['open_t1', 'open_t5'], inplace=True)
+    processed = processed.drop(columns=['open_t1', 'open_t5'])
     return processed
 
 
@@ -77,6 +81,14 @@ def _preprocess_common(df, stockid2idx, desc, feature_pipeline, drop_small_open=
     processed['instrument'] = processed['instrument'].astype(np.int64)
 
     processed = _build_label_and_clean(processed, drop_small_open=drop_small_open)
+    if config.get('use_cross_sectional_feature_norm', True):
+        processed = apply_cross_sectional_normalization(
+            processed,
+            feature_columns,
+            date_col='日期',
+            method=config.get('feature_cs_norm_method', 'zscore'),
+            clip_value=config.get('feature_cs_clip_value', None),
+        )
     return processed, feature_columns
 
 
@@ -95,50 +107,172 @@ def preprocess_val_data(df, feature_pipeline, stockid2idx=None):
 # 加权的组合收益排序损失函数
 class PortfolioOptimizationLoss(nn.Module):
     """
-    针对量化排序直接优化投资组合收益的损失函数。
-    结合 ListNet (全局分布对齐) 和 加权 RankNet (强化头部收益)，直接最大化强个股得分。
+    混合损失：
+    - ListNet：全局分布对齐；
+    - Pairwise RankNet：强化头部排序；
+    - LambdaNDCG：直接逼近 Top-K 排序目标。
     """
-    def __init__(self, temperature=10.0, pairwise_weight=1.0):
+    def __init__(
+        self,
+        temperature=10.0,
+        listnet_weight=1.0,
+        pairwise_weight=1.0,
+        lambda_ndcg_weight=1.0,
+        lambda_ndcg_topk=50,
+    ):
         super(PortfolioOptimizationLoss, self).__init__()
-        self.temperature = temperature
-        self.pairwise_weight = pairwise_weight
+        self.temperature = float(temperature)
+        self.listnet_weight = float(listnet_weight)
+        self.pairwise_weight = float(pairwise_weight)
+        self.lambda_ndcg_weight = float(lambda_ndcg_weight)
+        self.lambda_ndcg_topk = int(lambda_ndcg_topk)
+
+    def _pairwise_ranknet_loss(self, y_pred, y_true):
+        n = y_true.numel()
+        if n <= 1:
+            return y_pred.new_zeros(())
+
+        top_fraction = float(config.get('pairwise_top_fraction', 0.1))
+        k = max(1, int(n * top_fraction))
+        _, top_true_indices = torch.topk(y_true, k)
+
+        y_pred_top = y_pred[top_true_indices]
+        y_true_top = y_true[top_true_indices]
+
+        pred_diff = y_pred_top.unsqueeze(1) - y_pred.unsqueeze(0)
+        true_diff = y_true_top.unsqueeze(1) - y_true.unsqueeze(0)
+        mask = (true_diff > 0).float()
+        return (F.softplus(-pred_diff) * mask * true_diff.abs()).sum() / (mask.sum() + 1e-8)
+
+    def _lambda_ndcg_loss(self, y_pred, y_true):
+        n = y_true.numel()
+        if n <= 1:
+            return y_pred.new_zeros(())
+
+        # gain 归一化，避免量纲影响
+        gains = y_true - torch.min(y_true)
+        gains = gains / (torch.max(gains) + 1e-8)
+
+        ideal_order = torch.argsort(gains, descending=True)
+        discounts = 1.0 / torch.log2(torch.arange(n, device=y_true.device, dtype=torch.float32) + 2.0)
+        ideal_dcg = torch.sum(gains[ideal_order] * discounts) + 1e-8
+
+        pred_order = torch.argsort(y_pred, descending=True)
+        pred_pos = torch.empty_like(pred_order)
+        pred_pos[pred_order] = torch.arange(n, device=y_true.device)
+        pred_discounts = 1.0 / torch.log2(pred_pos.float() + 2.0)
+
+        gain_diff = gains.unsqueeze(1) - gains.unsqueeze(0)
+        discount_diff = pred_discounts.unsqueeze(1) - pred_discounts.unsqueeze(0)
+        delta_ndcg = torch.abs(gain_diff * discount_diff) / ideal_dcg
+
+        pred_diff = y_pred.unsqueeze(1) - y_pred.unsqueeze(0)
+        true_diff = y_true.unsqueeze(1) - y_true.unsqueeze(0)
+        pair_mask = true_diff > 0
+
+        if self.lambda_ndcg_topk > 0:
+            topk = min(self.lambda_ndcg_topk, n)
+            _, top_idx = torch.topk(y_true, topk)
+            top_mask = torch.zeros(n, dtype=torch.bool, device=y_true.device)
+            top_mask[top_idx] = True
+            pair_mask = pair_mask & top_mask.unsqueeze(1)
+
+        if pair_mask.sum() == 0:
+            return y_pred.new_zeros(())
+
+        weighted_pair_loss = F.softplus(-pred_diff) * delta_ndcg
+        return weighted_pair_loss[pair_mask].mean()
 
     def forward(self, y_pred, y_true):
         """
         y_pred: [1, num_items]
-        y_true: [1, num_items] (实际收益率)
+        y_true: [1, num_items] (训练用目标，已按配置做截面归一化/极值处理)
         """
-        # 1. ListNet Loss (全局分布对齐)
-        # 放大极端正收益影响，构建期望的收益概率分布
-        P_true = F.softmax(y_true * self.temperature, dim=1)
-        # 用 log 分布对齐 y_pred
-        P_pred = F.log_softmax(y_pred, dim=1)
-        listnet_loss = -torch.sum(P_true * P_pred, dim=1).mean()
-        
-        # 2. Top-K Pairwise RankNet Loss (极大化右尾极值)
-        # 剥离多余维度 [N]
-        y_pred = y_pred.squeeze(0)
-        y_true = y_true.squeeze(0)
-        
-        # 为了提高效率并且专注于挑出最好的股票，我们只选取真实收益最高的前 10%
-        # 将它们与所有其他股票进行配对比较
-        k = max(1, int(len(y_true) * 0.1))
-        _, top_true_indices = torch.topk(y_true, k)
-        
-        y_pred_top = y_pred[top_true_indices]
-        y_true_top = y_true[top_true_indices]
-        
-        # 构建预测差值和真实差值矩阵 [k, N]
-        pred_diff = y_pred_top.unsqueeze(1) - y_pred.unsqueeze(0)
-        true_diff = y_true_top.unsqueeze(1) - y_true.unsqueeze(0)
-        
-        # 只取真实的收益差 (好 vs 坏)
-        mask = (true_diff > 0).float()
-        
-        # Pairwise Loss: 分数必须对应真实收益差；收益差距越大的 pair，惩罚权重越大
-        pairwise_loss = (F.softplus(-pred_diff) * mask * true_diff).sum() / (mask.sum() + 1e-8)
-        
-        return listnet_loss + self.pairwise_weight * pairwise_loss
+        p_true = F.softmax(y_true * self.temperature, dim=1)
+        p_pred = F.log_softmax(y_pred, dim=1)
+        listnet_loss = -torch.sum(p_true * p_pred, dim=1).mean()
+
+        y_pred_flat = y_pred.squeeze(0)
+        y_true_flat = y_true.squeeze(0)
+        pairwise_loss = self._pairwise_ranknet_loss(y_pred_flat, y_true_flat)
+        lambda_ndcg_loss = self._lambda_ndcg_loss(y_pred_flat, y_true_flat)
+
+        return (
+            self.listnet_weight * listnet_loss
+            + self.pairwise_weight * pairwise_loss
+            + self.lambda_ndcg_weight * lambda_ndcg_loss
+        )
+
+
+def _tensor_rank_normalize(values):
+    n = values.numel()
+    if n <= 1:
+        return torch.zeros_like(values)
+    order = torch.argsort(values)
+    ranks = torch.empty_like(order, dtype=torch.float32)
+    ranks[order] = torch.arange(n, device=values.device, dtype=torch.float32)
+    return (ranks / max(n - 1, 1)) * 2.0 - 1.0
+
+
+def transform_targets_for_loss(valid_pred, valid_target):
+    """
+    为损失函数准备训练目标：
+    1) 极值样本 drop / clip；
+    2) 截面标准化（zscore/rank）。
+    """
+    mode = str(config.get('label_extreme_mode', 'clip')).lower()
+    lower_q = float(config.get('label_extreme_lower_quantile', 0.05))
+    upper_q = float(config.get('label_extreme_upper_quantile', 0.95))
+    lower_q = max(0.0, min(lower_q, 0.49))
+    upper_q = min(1.0, max(upper_q, 0.51))
+
+    pred = valid_pred
+    target = valid_target
+
+    if mode in {'drop', 'drop_clip'} and target.numel() > 5:
+        lower = torch.quantile(target, lower_q)
+        upper = torch.quantile(target, upper_q)
+        keep_mask = (target >= lower) & (target <= upper)
+        if int(keep_mask.sum().item()) >= 2:
+            pred = pred[keep_mask]
+            target = target[keep_mask]
+
+    if mode in {'clip', 'drop_clip'} and target.numel() > 2:
+        lower = torch.quantile(target, lower_q)
+        upper = torch.quantile(target, upper_q)
+        target = torch.clamp(target, min=lower, max=upper)
+
+    if config.get('use_cross_sectional_label_norm', True):
+        label_norm_method = str(config.get('label_cs_norm_method', 'zscore')).lower()
+        if label_norm_method == 'zscore':
+            mean = target.mean()
+            std = target.std(unbiased=False)
+            target = (target - mean) / (std + 1e-6)
+        elif label_norm_method == 'rank':
+            target = _tensor_rank_normalize(target)
+        else:
+            raise ValueError(f'不支持的 label_cs_norm_method: {label_norm_method}')
+
+        clip_value = config.get('label_cs_clip_value', None)
+        if clip_value is not None:
+            clip_value = float(clip_value)
+            target = torch.clamp(target, min=-clip_value, max=clip_value)
+
+    return pred, target
+
+
+def _rank_ic(valid_pred, valid_true_return):
+    n = valid_true_return.numel()
+    if n <= 2:
+        return np.nan
+
+    pred_rank = _tensor_rank_normalize(valid_pred).detach()
+    true_rank = _tensor_rank_normalize(valid_true_return).detach()
+
+    pred_centered = pred_rank - pred_rank.mean()
+    true_centered = true_rank - true_rank.mean()
+    denom = torch.sqrt((pred_centered ** 2).sum() * (true_centered ** 2).sum()) + 1e-12
+    return float((pred_centered * true_centered).sum().item() / denom.item())
 
 
 def build_strategy_candidates():
@@ -190,9 +324,11 @@ def calculate_ranking_metrics(y_pred, y_true, masks, strategy_candidates=None, t
     if strategy_candidates is None:
         strategy_candidates = [{'name': 'equal_top5', 'top_k': 5, 'weighting': 'equal'}]
 
+    strategy_risk_lambda = float(config.get('strategy_risk_lambda', 0.2))
     metrics_lists = {f'return_{candidate["name"]}': [] for candidate in strategy_candidates}
     max_top_k = max(candidate['top_k'] for candidate in strategy_candidates)
     oracle_return_list = []
+    rank_ic_list = []
 
     for i in range(batch_size):
         mask = masks[i]
@@ -219,20 +355,48 @@ def calculate_ranking_metrics(y_pred, y_true, masks, strategy_candidates=None, t
         _, true_indices = torch.topk(valid_true_return, 5)
         true_top_returns = valid_true_return[true_indices]
         oracle_return_list.append(true_top_returns.mean().item())
+        rank_ic_list.append(_rank_ic(valid_pred, valid_true_return))
 
-    metrics = {name: (np.mean(values) if values else 0.0) for name, values in metrics_lists.items()}
+    metrics = {}
+    for name, values in metrics_lists.items():
+        if values:
+            mean_ret = float(np.mean(values))
+            std_ret = float(np.std(values))
+        else:
+            mean_ret = 0.0
+            std_ret = 0.0
+        metrics[name] = mean_ret
+        metrics[f'{name}_std'] = std_ret
+        metrics[f'{name}_risk_adjusted'] = mean_ret - strategy_risk_lambda * std_ret
+
     metrics['oracle_top5_equal'] = np.mean(oracle_return_list) if oracle_return_list else 0.0
+    valid_rank_ics = [x for x in rank_ic_list if not np.isnan(x)]
+    if valid_rank_ics:
+        rank_ic_mean = float(np.mean(valid_rank_ics))
+        rank_ic_std = float(np.std(valid_rank_ics))
+        rank_ic_ir = rank_ic_mean / (rank_ic_std + 1e-12)
+    else:
+        rank_ic_mean = 0.0
+        rank_ic_std = 0.0
+        rank_ic_ir = 0.0
+    metrics['rank_ic_mean'] = rank_ic_mean
+    metrics['rank_ic_std'] = rank_ic_std
+    metrics['rank_ic_ir'] = rank_ic_ir
 
     return metrics
 
 
 def choose_best_strategy(eval_metrics, strategy_candidates):
     selection_metric = config.get('selection_metric', 'auto')
+    selection_mode = str(config.get('strategy_selection_mode', 'risk_adjusted')).lower()
 
     if selection_metric != 'auto':
+        if selection_metric not in eval_metrics:
+            raise ValueError(f'selection_metric 不在评估指标中: {selection_metric}')
         metric_value = eval_metrics.get(selection_metric, float('-inf'))
         for candidate in strategy_candidates:
-            if f'return_{candidate["name"]}' == selection_metric:
+            base_metric = f'return_{candidate["name"]}'
+            if selection_metric == base_metric or selection_metric.startswith(f'{base_metric}_'):
                 return candidate, metric_value
         raise ValueError(f'未找到 selection_metric 对应的策略: {selection_metric}')
 
@@ -240,7 +404,10 @@ def choose_best_strategy(eval_metrics, strategy_candidates):
     best_score = -float('inf')
 
     for candidate in strategy_candidates:
-        metric_name = f'return_{candidate["name"]}'
+        if selection_mode == 'risk_adjusted':
+            metric_name = f'return_{candidate["name"]}_risk_adjusted'
+        else:
+            metric_name = f'return_{candidate["name"]}'
         metric_value = eval_metrics.get(metric_name, -float('inf'))
         if metric_value > best_score:
             best_score = metric_value
@@ -257,8 +424,13 @@ def format_strategy_metric_summary(metrics, strategy_candidates):
     parts = []
     for candidate in strategy_candidates:
         metric_name = f'return_{candidate["name"]}'
+        metric_std_name = f'{metric_name}_std'
+        metric_ra_name = f'{metric_name}_risk_adjusted'
         if metric_name in metrics:
-            parts.append(f'{candidate["name"]}={metrics[metric_name]:.4f}')
+            mean_ret = metrics[metric_name]
+            std_ret = metrics.get(metric_std_name, 0.0)
+            ra_ret = metrics.get(metric_ra_name, mean_ret)
+            parts.append(f'{candidate["name"]}=mean:{mean_ret:.4f}|std:{std_ret:.4f}|ra:{ra_ret:.4f}')
     return ', '.join(parts)
 
 
@@ -525,7 +697,6 @@ def train_ranking_model(model, dataloader, criterion, optimizer, device, epoch, 
     for batch in tqdm(dataloader, desc=f"Training Epoch {epoch+1}"):
         sequences = batch['sequences'].to(device)    # [batch, max_stocks, seq_len, features]
         targets = batch['targets'].to(device)        # [batch, max_stocks] 真实涨跌幅
-        relevance = batch['relevance'].to(device)    # [batch, max_stocks] 预处理的相关性得分
         masks = batch['masks'].to(device)            # [batch, max_stocks] 有效位置mask
         
         optimizer.zero_grad()
@@ -536,7 +707,6 @@ def train_ranking_model(model, dataloader, criterion, optimizer, device, epoch, 
         # 应用mask，只考虑有效股票
         masked_outputs = outputs * masks + (1 - masks) * (-1e9)  # 无效位置设为很小的值
         masked_targets = targets * masks
-        masked_relevance = relevance.float() * masks  # 使用预处理好的相关性得分
         
         # 计算损失（只对有效股票计算）
         batch_loss = None
@@ -554,12 +724,13 @@ def train_ranking_model(model, dataloader, criterion, optimizer, device, epoch, 
             
             # 获取有效股票的预测值和真实收益率
             valid_pred = masked_outputs[i][valid_indices]
-            # [重要] 这里我们改为直接向模型强制灌输真实的未来收益率（masked_targets）
             valid_target = masked_targets[i][valid_indices]
+
+            valid_pred_for_loss, valid_target_for_loss = transform_targets_for_loss(valid_pred, valid_target)
             
-            if len(valid_pred) > 1:
+            if len(valid_pred_for_loss) > 1:
                 # 使用 PortfolioOptimizationLoss 直接对实际收益率进行平滑优化
-                loss = criterion(valid_pred.unsqueeze(0), valid_target.unsqueeze(0))
+                loss = criterion(valid_pred_for_loss.unsqueeze(0), valid_target_for_loss.unsqueeze(0))
                 batch_loss = batch_loss + loss if isinstance(batch_loss, torch.Tensor) else loss
         
         if batch_loss is not None:
@@ -648,10 +819,11 @@ def evaluate_ranking_model(
                 
                 valid_pred = masked_outputs[i][valid_indices]
                 valid_true = masked_targets[i][valid_indices]
-                
-                if len(valid_pred) > 1:
+
+                valid_pred_for_loss, valid_target_for_loss = transform_targets_for_loss(valid_pred, valid_true)
+                if len(valid_pred_for_loss) > 1:
                     # 使用实际收益率进行 loss 验证
-                    loss = criterion(valid_pred.unsqueeze(0), valid_true.unsqueeze(0))
+                    loss = criterion(valid_pred_for_loss.unsqueeze(0), valid_target_for_loss.unsqueeze(0))
                     batch_loss = batch_loss + loss if batch_loss is not None else loss
             
             if batch_loss is not None:
@@ -768,7 +940,11 @@ def evaluate_factor_group_ablation(
 ):
     group_indices = build_factor_group_indices(feature_pipeline)
     ablation_results = []
-    baseline_metric_name = f'return_{baseline_candidate["name"]}'
+    selection_mode = str(config.get('strategy_selection_mode', 'risk_adjusted')).lower()
+    if selection_mode == 'risk_adjusted':
+        baseline_metric_name = f'return_{baseline_candidate["name"]}_risk_adjusted'
+    else:
+        baseline_metric_name = f'return_{baseline_candidate["name"]}'
 
     for group_name, feature_indices in sorted(group_indices.items()):
         ablation_loss, ablation_metrics, _ = evaluate_ranking_folds(
@@ -1126,7 +1302,13 @@ def main():
     print("候选持仓策略:", ", ".join(candidate['name'] for candidate in strategy_candidates))
     
     # 7. 损失函数和优化器
-    criterion = PortfolioOptimizationLoss(temperature=10.0, pairwise_weight=config.get('pairwise_weight', 1.0))
+    criterion = PortfolioOptimizationLoss(
+        temperature=float(config.get('loss_temperature', 10.0)),
+        listnet_weight=float(config.get('listnet_weight', 1.0)),
+        pairwise_weight=float(config.get('pairwise_weight', 1.0)),
+        lambda_ndcg_weight=float(config.get('lambda_ndcg_weight', 1.0)),
+        lambda_ndcg_topk=int(config.get('lambda_ndcg_topk', 50)),
+    )
     optimizer = torch.optim.AdamW(model.parameters(), lr=config['learning_rate'], weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.2, total_iters=config['num_epochs'])
     
@@ -1134,6 +1316,15 @@ def main():
     if is_train:
         best_score = -float('inf')
         best_epoch = -1
+        early_stop_enabled = bool(config.get('early_stopping_enabled', True))
+        early_stop_patience = int(config.get('early_stopping_patience', 8))
+        early_stop_min_delta = float(config.get('early_stopping_min_delta', 1e-4))
+        early_stop_monitor = str(config.get('early_stopping_monitor', 'rank_ic_mean'))
+        early_stop_mode = str(config.get('early_stopping_mode', 'max')).lower()
+        if early_stop_mode not in {'max', 'min'}:
+            raise ValueError(f'early_stopping_mode 非法: {early_stop_mode}')
+        best_monitor = -float('inf') if early_stop_mode == 'max' else float('inf')
+        bad_epochs = 0
         
         for epoch in range(config['num_epochs']):
             print(f"\n=== Epoch {epoch+1}/{config['num_epochs']} ===")
@@ -1182,7 +1373,13 @@ def main():
             
 
             best_candidate, current_final_score = choose_best_strategy(eval_metrics, strategy_candidates)
-            print(f"当前最优持仓策略: {best_candidate['name']} | 验证收益: {current_final_score:.4f}")
+            best_candidate_return = eval_metrics.get(f'return_{best_candidate["name"]}', current_final_score)
+            print(
+                f"当前最优持仓策略: {best_candidate['name']} | "
+                f"验证目标值: {current_final_score:.4f} | "
+                f"策略收益均值: {best_candidate_return:.4f} | "
+                f"RankIC: {eval_metrics.get('rank_ic_mean', 0.0):.4f}"
+            )
 
             if config.get('factor_ablation_enabled', True):
                 ablation_results = evaluate_factor_group_ablation(
@@ -1216,8 +1413,13 @@ def main():
                         'top_k': best_candidate['top_k'],
                         'weighting': best_candidate['weighting'],
                         'temperature': config.get('softmax_temperature', 1.0),
-                        'validation_return': current_final_score,
+                        'validation_objective': current_final_score,
+                        'validation_return': best_candidate_return,
                         'validation_mode': validation_mode,
+                        'strategy_selection_mode': config.get('strategy_selection_mode', 'risk_adjusted'),
+                        'strategy_risk_lambda': float(config.get('strategy_risk_lambda', 0.2)),
+                        'rank_ic_mean': eval_metrics.get('rank_ic_mean', 0.0),
+                        'rank_ic_ir': eval_metrics.get('rank_ic_ir', 0.0),
                         'validation_folds': [
                             {
                                 'name': fold['name'],
@@ -1228,10 +1430,38 @@ def main():
                         ],
                         'best_epoch': best_epoch,
                     }, f, indent=4, ensure_ascii=False)
-                print(f"保存最佳模型 - final score: {best_score:.4f}")
-        print(f"\n训练完成！最佳 epoch: {best_epoch}, 最佳 final score: {best_score:.4f}")
+                print(f"保存最佳模型 - objective: {best_score:.4f}")
+
+            monitor_value = eval_metrics.get(early_stop_monitor, None)
+            if monitor_value is None:
+                print(f"早停监控指标缺失，跳过本轮监控: {early_stop_monitor}")
+                continue
+
+            if early_stop_mode == 'max':
+                improved = monitor_value > (best_monitor + early_stop_min_delta)
+            else:
+                improved = monitor_value < (best_monitor - early_stop_min_delta)
+
+            if improved:
+                best_monitor = monitor_value
+                bad_epochs = 0
+            else:
+                bad_epochs += 1
+
+            if writer:
+                writer.add_scalar(f'early_stop/{early_stop_monitor}', monitor_value, global_step=epoch)
+                writer.add_scalar('early_stop/bad_epochs', bad_epochs, global_step=epoch)
+
+            if early_stop_enabled and bad_epochs >= early_stop_patience:
+                print(
+                    f"触发早停: monitor={early_stop_monitor}, mode={early_stop_mode}, "
+                    f"patience={early_stop_patience}, best={best_monitor:.6f}"
+                )
+                break
+        print(f"\n训练完成！最佳 epoch: {best_epoch}, 最佳 objective: {best_score:.4f}")
         with open(os.path.join(output_dir, 'final_score.txt'), 'w') as f:
-            f.write(f"Best epoch: {best_epoch}\nBest final_score: {best_score:.6f}\n")
+            f.write(f"Best epoch: {best_epoch}\n")
+            f.write(f"Best objective: {best_score:.6f}\n")
 
         if writer:
             writer.close()
@@ -1242,4 +1472,4 @@ if __name__ == "__main__":
     # 多进程保护
     mp.set_start_method('spawn', force=True)
     best_score = main()
-    print(f"\n########## 训练完成！最佳 final score: {best_score:.4f} ##########")
+    print(f"\n########## 训练完成！最佳 objective: {best_score:.4f} ##########")

@@ -4,6 +4,57 @@ import joblib
 import os
 from tqdm import tqdm
 
+
+def apply_cross_sectional_normalization(
+    df,
+    columns,
+    date_col='日期',
+    method='zscore',
+    clip_value=None,
+):
+    """
+    按交易日对给定列做截面标准化，降低跨时段分布漂移影响。
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+    columns : list[str]
+        需要做截面归一化的列。
+    date_col : str
+        交易日列名。
+    method : str
+        'zscore' 或 'rank'。
+    clip_value : float | None
+        仅 zscore 生效。若设置，则对归一化结果做对称截断 [-clip, clip]。
+    """
+    if not columns:
+        return df
+    if date_col not in df.columns:
+        raise ValueError(f'缺少日期列，无法做截面标准化: {date_col}')
+
+    out = df.copy()
+    target_cols = [col for col in columns if col in out.columns]
+    if not target_cols:
+        return out
+
+    grouped = out.groupby(date_col)[target_cols]
+    if method == 'zscore':
+        means = grouped.transform('mean')
+        stds = grouped.transform('std').replace(0.0, np.nan)
+        normalized = (out[target_cols] - means) / (stds + 1e-12)
+        if clip_value is not None:
+            clip_value = float(clip_value)
+            normalized = normalized.clip(lower=-clip_value, upper=clip_value)
+        out[target_cols] = normalized.astype(np.float32)
+    elif method == 'rank':
+        ranks = grouped.rank(pct=True)
+        out[target_cols] = ((ranks * 2.0) - 1.0).astype(np.float32)
+    else:
+        raise ValueError(f'不支持的截面标准化方式: {method}')
+
+    out[target_cols] = out[target_cols].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    return out
+
 # 特征工程
 def _rolling_linear_regression(x, y):
     x = np.vstack([np.ones(len(x)), x]).T
@@ -107,15 +158,15 @@ def engineer_features_39(df):
     df['obv'] = talib.OBV(close, volume)
 
     # Volume-related features
-    df['volume_change'] = volume.pct_change()
+    df['volume_change'] = volume.pct_change(fill_method=None)
     df['volume_ma_5'] = talib.SMA(volume, timeperiod=5)
     df['volume_ma_20'] = talib.SMA(volume, timeperiod=20)
     df['volume_ratio'] = df['volume_ma_5'] / df['volume_ma_20']
 
     # Returns and Volatility
-    df['return_1'] = close.pct_change(1)
-    df['return_5'] = close.pct_change(5)
-    df['return_10'] = close.pct_change(10)
+    df['return_1'] = close.pct_change(1, fill_method=None)
+    df['return_5'] = close.pct_change(5, fill_method=None)
+    df['return_10'] = close.pct_change(10, fill_method=None)
     df['volatility_10'] = df['return_1'].rolling(10).std()
     df['volatility_20'] = df['return_1'].rolling(20).std()
 
@@ -127,7 +178,7 @@ def engineer_features_39(df):
 
     # 新增“高弹性/高博弈”因子
     # 动量加速因子 (Momentum Acceleration)： 过去3天的涨幅 - 过去10天的涨幅
-    df['mom_acc'] = close.pct_change(3) - close.pct_change(10)
+    df['mom_acc'] = close.pct_change(3, fill_method=None) - close.pct_change(10, fill_method=None)
     
     # 量价背离极致因子： (最高价 - 开盘价) / 成交量
     df['pv_div'] = (high - open_) / (volume + 1e-12)

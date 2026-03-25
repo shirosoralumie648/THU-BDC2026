@@ -60,6 +60,20 @@ class StockTransformer(nn.Module):
         self.model_type = 'RankingTransformer'
         self.config = config
         self.num_stocks = num_stocks
+        self.use_market_gating = bool(config.get('use_market_gating', True))
+        self.market_gate_residual = float(config.get('market_gate_residual', 0.5))
+
+        if self.use_market_gating:
+            gate_hidden_dim = int(config.get('market_gate_hidden_dim', max(32, input_dim // 2)))
+            gate_hidden_dim = max(8, gate_hidden_dim)
+            self.market_gate = nn.Sequential(
+                nn.LayerNorm(input_dim),
+                nn.Linear(input_dim, gate_hidden_dim),
+                nn.GELU(),
+                nn.Dropout(config['dropout'] * 0.5),
+                nn.Linear(gate_hidden_dim, input_dim),
+                nn.Sigmoid(),
+            )
         
         # 输入投影层
         self.input_proj = nn.Linear(input_dim, config['d_model'])
@@ -115,6 +129,15 @@ class StockTransformer(nn.Module):
     def forward(self, src):
         # src: [batch, num_stocks, seq_len, feature_dim]
         batch_size, num_stocks, seq_len, feature_dim = src.size()
+
+        # 市场状态引导门控：用全市场均值+波动提取当前市场状态，对特征维做动态缩放。
+        if self.use_market_gating:
+            market_mean = src.mean(dim=1).mean(dim=1)  # [batch, feature_dim]
+            market_vol = src.std(dim=1, unbiased=False).mean(dim=1)  # [batch, feature_dim]
+            market_state = market_mean + market_vol
+            gates = self.market_gate(market_state).unsqueeze(1).unsqueeze(1)  # [batch, 1, 1, feature_dim]
+            residual = self.market_gate_residual
+            src = src * (residual + (1.0 - residual) * gates)
         
         # 重塑为 [batch*num_stocks, seq_len, feature_dim]
         src_reshaped = src.view(batch_size * num_stocks, seq_len, feature_dim)
@@ -148,4 +171,3 @@ class StockTransformer(nn.Module):
         output = scores.view(batch_size, num_stocks)  # [batch, num_stocks]
         
         return output
-

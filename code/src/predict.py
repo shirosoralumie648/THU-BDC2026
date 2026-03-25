@@ -13,6 +13,7 @@ from factor_store import engineer_group_features
 from factor_store import load_factor_snapshot
 from factor_store import resolve_factor_pipeline
 from model import StockTransformer
+from utils import apply_cross_sectional_normalization
 
 
 def preprocess_predict_data(df, stockid2idx, feature_pipeline):
@@ -38,6 +39,15 @@ def preprocess_predict_data(df, stockid2idx, feature_pipeline):
 	processed = processed.dropna(subset=['instrument']).copy()
 	processed['instrument'] = processed['instrument'].astype(np.int64)
 	processed['日期'] = pd.to_datetime(processed['日期'])
+
+	if config.get('use_cross_sectional_feature_norm', True):
+		processed = apply_cross_sectional_normalization(
+			processed,
+			feature_columns,
+			date_col='日期',
+			method=config.get('feature_cs_norm_method', 'zscore'),
+			clip_value=config.get('feature_cs_clip_value', None),
+		)
 
 	return processed, feature_columns
 
@@ -168,7 +178,16 @@ def main():
 		device = torch.device('cpu')
 
 	model = StockTransformer(input_dim=len(features), config=config, num_stocks=len(stock_ids))
-	model.load_state_dict(torch.load(model_path, map_location=device))
+	state_dict = torch.load(model_path, map_location=device)
+	load_result = model.load_state_dict(state_dict, strict=False)
+	non_gate_missing = [k for k in load_result.missing_keys if not k.startswith('market_gate.')]
+	if non_gate_missing:
+		raise RuntimeError(f'模型参数缺失且无法兼容: {non_gate_missing[:10]}')
+	if load_result.missing_keys:
+		print('检测到旧版checkpoint（缺少 market_gate 参数），已自动关闭 market gating 兼容推理')
+		model.use_market_gating = False
+	if load_result.unexpected_keys:
+		print(f'模型包含额外参数（将忽略）: {load_result.unexpected_keys[:10]}')
 	model.to(device)
 	model.eval()
 	strategy = load_prediction_strategy(config['output_dir'])

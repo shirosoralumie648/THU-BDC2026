@@ -1,0 +1,26 @@
+---
+name: stream-chain
+description: >
+  Custom skill: stream-chain
+  Use when: Define when to trigger this skill.
+  Skip when: Define when to skip this skill.
+---
+
+# Stream Chain Skill
+
+## Purpose
+Custom skill: stream-chain
+
+## When to Trigger
+- Define when to trigger this skill
+
+## When to Skip
+- Define when to skip this skill
+
+
+
+## Best Practices
+1. Check memory for existing patterns before starting
+2. Use hierarchical topology for coordination
+3. Store successful patterns after completion
+4. Document any new learnings

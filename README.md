@@ -3,7 +3,7 @@
 本项目是一个面向沪深300成分股的**排序学习选股**方案：
 - 输入：每只股票过去一段时间（默认60个交易日）的量价与技术特征序列；
 - 模型：`StockTransformer`，同时建模单股票时序模式与股票间交互；
-- 输出：对同一天全部候选股票打分并排序，最终输出前5只股票（等权重0.2）。
+- 输出：对同一天全部候选股票打分并排序，按 `best_strategy.json` 输出最多5只股票及权重（`equal` 或 `softmax`）。
 
 ---
 
@@ -17,7 +17,7 @@
 3. 构建标签：未来收益率（代码中为 `open_t1` 到 `open_t5` 的相对收益）；
 4. 按“日期”组织排序样本：每个样本是一日内多只股票的序列与目标；
 5. 训练排序模型，监控 `final_score` 并保存最优权重；
-6. 使用训练好的 `best_model.pth` + `scaler.pkl` 在最新日期上生成Top5选股结果。
+6. 使用训练好的 `best_model.pth` + `scaler.pkl` + `best_strategy.json` 在最新日期上生成持仓结果。
 
 ---
 
@@ -28,7 +28,9 @@
 - 序列长度 `sequence_length`（默认60）；
 - 模型超参数（`d_model`、`nhead`、`num_layers` 等）；
 - 训练超参数（`batch_size`、`num_epochs`、`learning_rate`）；
-- 排序损失权重参数（`pairwise_weight`、`top5_weight`、`base_weight`）；
+- 排序损失参数（`listnet_weight`、`pairwise_weight`、`lambda_ndcg_weight` 等）；
+- 策略选择参数（`strategy_selection_mode`、`strategy_risk_lambda`、`prediction_top_k_candidates`）；
+- 稳定性参数（特征/标签截面标准化、标签极值处理、RankIC早停）；
 - 数据路径和输出路径（默认输出到 `output/`）。
 
 ### [model.py](model.py)
@@ -58,12 +60,13 @@
 	- `split_train_val_by_last_month()`：按最后阶段数据切分训练/验证集，并保留序列上下文。
 - 数据集组织：
 	- `RankingDataset` + `collate_fn`：处理每日股票数量不一致问题（padding + mask）。
-- 损失函数：`WeightedRankingLoss`
-	- 组合了 `listwise_loss` 与 `pairwise_loss`；
-	- 对真实Top-k样本施加更高权重。
+- 损失函数：`PortfolioOptimizationLoss`
+	- 组合 `ListNet + Pairwise RankNet + LambdaNDCG`；
+	- 支持标签极值处理与标签截面标准化（仅用于训练 loss）。
 - 评估指标：`calculate_ranking_metrics()`
-	- 计算 `pred_return_sum`、`max_return_sum`、`ratio_pred`、`final_score` 等；
-	- 训练过程中以验证集 `final_score` 选择最优模型。
+	- 计算各策略 `mean/std/risk_adjusted return`；
+	- 计算 `rank_ic_mean/rank_ic_ir`；
+	- 训练过程中按配置选择最优策略并支持 RankIC 早停。
 
 训练产物：
 - `best_model.pth`：最佳模型参数；
@@ -76,12 +79,12 @@
 ### [predict.py](predict.py)
 推理主脚本，流程：
 1. 加载历史数据，取最新交易日；
-2. 执行与训练一致的特征工程；
+2. 执行与训练一致的特征工程（含截面标准化）；
 3. 加载 `scaler.pkl` 进行特征标准化；
 4. 用 `best_model.pth` 对全部可预测股票打分；
-5. 按分数降序取前5只，输出到 `output.csv`：
+5. 按 `best_strategy.json` 生成持仓并输出到 `output/result.csv`：
 	 - `stock_id`
-	 - `weight`（固定 `0.2`）
+	 - `weight`
 
 说明：
 - 若模型目录下存在 `active_factors.json`，`predict.py` 会优先使用该快照中的因子配置；
@@ -244,3 +247,86 @@ wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
 
 3) GPU/CPU自动选择  
 代码会按 `CUDA -> MPS -> CPU` 顺序自动选择设备；无GPU时可直接CPU运行。
+
+---
+
+## 6. 优化版（2026-03）新增能力
+
+为了降低“验证集看起来好、测试集掉分”的问题，训练与推理新增了 6 个优化点：
+
+1) **稳健策略选择（Risk-Adjusted）**  
+- 对每个候选持仓策略同时统计 `mean/std`；
+- 策略评分使用 `mean - λ * std`（`strategy_risk_lambda`），默认优先稳健组合。
+
+2) **按日截面标准化（Features）**  
+- 训练与推理都支持按日期对特征做截面标准化（`zscore` 或 `rank`）；
+- 显著缓解跨时段分布漂移。
+
+3) **标签极值处理 + 截面标签标准化（Loss Target）**  
+- 训练损失前可做标签 `drop/clip`；
+- 再做标签截面归一化（`zscore/rank`），提升训练稳定性与泛化。
+
+4) **混合排序损失（ListNet + Pairwise + LambdaNDCG）**  
+- 在原有 listwise + pairwise 基础上加入 LambdaNDCG；
+- 更直接约束 Top-K 排序质量。
+
+5) **市场状态引导门控（Market Gating）**  
+- 在模型输入层增加“市场均值+波动”驱动的特征门控；
+- 动态调整不同市场状态下的因子贡献。
+
+6) **RankIC 早停**  
+- 验证集新增 `rank_ic_mean/rank_ic_ir`；
+- 默认使用 `rank_ic_mean` 做 early stopping，避免后期过拟合。
+
+---
+
+## 7. 核心配置项（优化版）
+
+位置：`code/src/config.py`
+
+- 策略选择
+  - `strategy_selection_mode`: `risk_adjusted | return`
+  - `strategy_risk_lambda`
+  - `prediction_top_k_candidates`
+
+- 特征截面标准化
+  - `use_cross_sectional_feature_norm`
+  - `feature_cs_norm_method`: `zscore | rank`
+  - `feature_cs_clip_value`
+
+- 标签处理（仅用于训练损失）
+  - `label_extreme_mode`: `none | drop | clip | drop_clip`
+  - `label_extreme_lower_quantile`
+  - `label_extreme_upper_quantile`
+  - `use_cross_sectional_label_norm`
+  - `label_cs_norm_method`: `zscore | rank`
+  - `label_cs_clip_value`
+
+- 损失函数
+  - `listnet_weight`
+  - `pairwise_weight`
+  - `lambda_ndcg_weight`
+  - `lambda_ndcg_topk`
+  - `pairwise_top_fraction`
+
+- 模型门控
+  - `use_market_gating`
+  - `market_gate_hidden_dim`
+  - `market_gate_residual`
+
+- RankIC 早停
+  - `early_stopping_enabled`
+  - `early_stopping_patience`
+  - `early_stopping_min_delta`
+  - `early_stopping_monitor`
+  - `early_stopping_mode`
+
+---
+
+## 8. 复现实验建议
+
+1) 固定随机种子，先跑一版 baseline（旧参数）。
+2) 只开启一个优化项做 ablation，对比 `final_score + rank_ic_mean`。
+3) 最后开启全部优化项，观察：
+   - 验证集：`rank_ic_mean` 和策略 `risk_adjusted return`；
+   - 本地测试：`test/score_self.py` 得分是否回升且波动降低。

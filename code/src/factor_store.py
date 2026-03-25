@@ -250,7 +250,7 @@ def _helper_diff(x, periods=1):
 
 
 def _helper_pct_change(x, periods=1):
-    return x.pct_change(int(periods))
+    return x.pct_change(int(periods), fill_method=None)
 
 
 def _helper_sma(x, window):
@@ -598,7 +598,7 @@ def _helper_bbi(close):
 
 
 def _helper_pvt(close, volume):
-    return ((close.pct_change().fillna(0.0)) * volume).cumsum()
+    return ((close.pct_change(fill_method=None).fillna(0.0)) * volume).cumsum()
 
 
 def _helper_emv(high, low, volume, window):
@@ -627,7 +627,7 @@ def _helper_price_deviation(close, window):
 
 
 def _helper_max_daily_return(close, window):
-    return close.pct_change().rolling(int(window)).max()
+    return close.pct_change(fill_method=None).rolling(int(window)).max()
 
 
 def _helper_normalized_ma_momentum(close, *windows):

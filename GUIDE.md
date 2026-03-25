@@ -73,7 +73,7 @@ windows可以直接运行`python code/src/predict.py`
 
 <img src="./asset/score.png" alt="score" width="50%">
 
-**注意**目前代码中直接选择排序得分最高的五个股票，平均权重。选手可以自行更改代码逻辑，只要满足最多五个股票，权重之和为1即可。
+**注意**当前代码会根据训练阶段保存的 `best_strategy.json` 自动选择持仓数量与权重方式（可为 `top1~top5`，`equal/softmax`）。只要满足“最多五个股票，权重和为1”即可。
 
 # 打包docker
 在训练与测试完成之后，需要首先将项目整体打包成一个docker镜像（打包），再将该镜像导出为一个.tar文件（导出），最终提交该tar文件即可，里面需要包含运行时的所有环境及依赖，具体可以参考或修改Dockerfile
@@ -123,3 +123,17 @@ windows
 Team Name,Final Score
 1,0.018867553640330992
 ```
+
+# 优化版说明（新增）
+
+当前版本已支持以下增强能力：
+- 稳健策略选择（均值-波动惩罚）
+- 截面特征标准化（训练/推理同口径）
+- 标签极值处理与截面标签标准化（仅用于训练损失）
+- 混合损失（ListNet + Pairwise + LambdaNDCG）
+- 市场状态引导门控（Market Gating）
+- RankIC 早停
+
+详细参数与调参建议见：
+- `README.md` 的“优化版”章节
+- `docs/optimization-playbook.md`
