@@ -32,7 +32,15 @@ config = {
 
     # 标签处理：市场中性化 + MAD去极值（按日） + 截面标准化（按日）
     'use_label_market_neutralization': True,
-    'label_market_neutralization': 'cross_sectional_mean',  # none | cross_sectional_mean
+    # none | cross_sectional_mean | benchmark | industry | benchmark_then_industry | industry_then_benchmark
+    'label_market_neutralization': 'cross_sectional_mean',
+    # benchmark 中性化（可选）
+    'label_benchmark_return_path': '',      # 例如: ./data/hs300_index.csv
+    'label_benchmark_return_col': '',       # 留空自动识别: benchmark_return/return/收益率/涨跌幅/pct_chg
+    # industry 中性化（可选）
+    'label_industry_map_path': '',          # 例如: ./data/stock_industry_map.csv
+    'label_industry_stock_col': '股票代码',
+    'label_industry_col': '行业',
     'use_label_mad_clip': True,
     'label_mad_clip_n': 5.0,
     'label_mad_min_scale': 1e-6,
