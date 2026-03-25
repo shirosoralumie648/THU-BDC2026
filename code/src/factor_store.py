@@ -277,6 +277,10 @@ def _helper_rolling_sum(x, window):
     return x.rolling(int(window)).sum()
 
 
+def _helper_rolling_skew(x, window):
+    return x.rolling(int(window)).skew()
+
+
 def _helper_rank_pct(x, window):
     return x.rolling(int(window)).rank(pct=True)
 
@@ -501,6 +505,144 @@ def _helper_kdj_d(high, low, close, fastk=9, slowk=3, slowd=3):
     return _as_series(d_value, close.index)
 
 
+def _helper_tema(close, window):
+    talib = _import_talib()
+    return _as_series(talib.TEMA(close.astype(float), timeperiod=int(window)), close.index)
+
+
+def _helper_cci(high, low, close, window):
+    talib = _import_talib()
+    values = talib.CCI(
+        high.astype(float),
+        low.astype(float),
+        close.astype(float),
+        timeperiod=int(window),
+    )
+    return _as_series(values, close.index)
+
+
+def _helper_mfi(high, low, close, volume, window):
+    talib = _import_talib()
+    values = talib.MFI(
+        high.astype(float),
+        low.astype(float),
+        close.astype(float),
+        volume.astype(float),
+        timeperiod=int(window),
+    )
+    return _as_series(values, close.index)
+
+
+def _helper_ad_line(high, low, close, volume):
+    talib = _import_talib()
+    values = talib.AD(
+        high.astype(float),
+        low.astype(float),
+        close.astype(float),
+        volume.astype(float),
+    )
+    return _as_series(values, close.index)
+
+
+def _helper_chaikin_osc(high, low, close, volume, fast=3, slow=10):
+    talib = _import_talib()
+    values = talib.ADOSC(
+        high.astype(float),
+        low.astype(float),
+        close.astype(float),
+        volume.astype(float),
+        fastperiod=int(fast),
+        slowperiod=int(slow),
+    )
+    return _as_series(values, close.index)
+
+
+def _helper_adx(high, low, close, window):
+    talib = _import_talib()
+    values = talib.ADX(
+        high.astype(float),
+        low.astype(float),
+        close.astype(float),
+        timeperiod=int(window),
+    )
+    return _as_series(values, close.index)
+
+
+def _helper_aroon_osc(high, low, window):
+    talib = _import_talib()
+    values = talib.AROONOSC(
+        high.astype(float),
+        low.astype(float),
+        timeperiod=int(window),
+    )
+    return _as_series(values, high.index)
+
+
+def _helper_cmo(close, window):
+    talib = _import_talib()
+    values = talib.CMO(close.astype(float), timeperiod=int(window))
+    return _as_series(values, close.index)
+
+
+def _helper_psy(close, window):
+    return (close > close.shift(1)).astype(np.float32).rolling(int(window)).mean() * 100.0
+
+
+def _helper_bbi(close):
+    return (
+        close.rolling(3).mean()
+        + close.rolling(6).mean()
+        + close.rolling(12).mean()
+        + close.rolling(24).mean()
+    ) / 4.0
+
+
+def _helper_pvt(close, volume):
+    return ((close.pct_change().fillna(0.0)) * volume).cumsum()
+
+
+def _helper_emv(high, low, volume, window):
+    midpoint_move = ((high + low) / 2.0).diff()
+    box_ratio = volume / (high - low + 1e-12)
+    emv_raw = midpoint_move / (box_ratio + 1e-12)
+    return emv_raw.rolling(int(window)).mean()
+
+
+def _helper_imi(open_, close, window):
+    intraday_move = close - open_
+    up_move = intraday_move.clip(lower=0).rolling(int(window)).sum()
+    total_move = intraday_move.abs().rolling(int(window)).sum()
+    return up_move / (total_move + 1e-12) * 100.0
+
+
+def _helper_vhf(high, low, close, window):
+    window = int(window)
+    trend = high.rolling(window).max() - low.rolling(window).min()
+    noise = close.diff().abs().rolling(window).sum()
+    return trend / (noise + 1e-12)
+
+
+def _helper_price_deviation(close, window):
+    return close / (close.rolling(int(window)).mean() + 1e-12) - 1.0
+
+
+def _helper_max_daily_return(close, window):
+    return close.pct_change().rolling(int(window)).max()
+
+
+def _helper_normalized_ma_momentum(close, *windows):
+    deviations = []
+    for window in windows:
+        deviations.append(close / (close.rolling(int(window)).mean() + 1e-12) - 1.0)
+    return sum(deviations) / max(len(deviations), 1)
+
+
+def _helper_chaikin_volatility(high, low, window):
+    window = int(window)
+    ema_range = (high - low).ewm(span=window, adjust=False).mean()
+    return (ema_range - ema_range.shift(window)) / (ema_range.shift(window) + 1e-12)
+
+
 EXPRESSION_HELPERS = {
     'abs': _helper_abs,
     'log': _helper_log,
@@ -517,6 +659,7 @@ EXPRESSION_HELPERS = {
     'rolling_min': _helper_rolling_min,
     'rolling_max': _helper_rolling_max,
     'rolling_sum': _helper_rolling_sum,
+    'rolling_skew': _helper_rolling_skew,
     'rolling_quantile': _helper_rolling_quantile,
     'rank_pct': _helper_rank_pct,
     'zscore': _helper_zscore,
@@ -547,6 +690,24 @@ EXPRESSION_HELPERS = {
     'boll_std': _helper_boll_std,
     'kdj_k': _helper_kdj_k,
     'kdj_d': _helper_kdj_d,
+    'tema': _helper_tema,
+    'cci': _helper_cci,
+    'mfi': _helper_mfi,
+    'ad_line': _helper_ad_line,
+    'chaikin_osc': _helper_chaikin_osc,
+    'adx': _helper_adx,
+    'aroon_osc': _helper_aroon_osc,
+    'cmo': _helper_cmo,
+    'psy': _helper_psy,
+    'bbi': _helper_bbi,
+    'pvt': _helper_pvt,
+    'emv': _helper_emv,
+    'imi': _helper_imi,
+    'vhf': _helper_vhf,
+    'price_deviation': _helper_price_deviation,
+    'max_daily_return': _helper_max_daily_return,
+    'normalized_ma_momentum': _helper_normalized_ma_momentum,
+    'chaikin_volatility': _helper_chaikin_volatility,
     'np': np,
 }
 

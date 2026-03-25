@@ -8,7 +8,155 @@
     },
     "158+39": {
       "disabled_builtin_factors": [],
-      "custom_factors": [],
+      "custom_factors": [
+        {
+          "name": "return_20",
+          "expression": "pct_change(收盘, 20)",
+          "group": "daily_ext_momentum",
+          "description": "20日区间收益率动量/反转因子",
+          "enabled": true
+        },
+        {
+          "name": "turnover_mean_20",
+          "expression": "sma(换手率, 20)",
+          "group": "daily_ext_volume_flow",
+          "description": "20日日均换手率",
+          "enabled": true
+        },
+        {
+          "name": "pvt_factor",
+          "expression": "pvt(收盘, 成交量)",
+          "group": "daily_ext_volume_flow",
+          "description": "价格成交量趋势指标",
+          "enabled": true
+        },
+        {
+          "name": "emv_14",
+          "expression": "emv(最高, 最低, 成交量, 14)",
+          "group": "daily_ext_volume_flow",
+          "description": "简易波动指标 EMV",
+          "enabled": true
+        },
+        {
+          "name": "bbi_factor",
+          "expression": "bbi(收盘)",
+          "group": "daily_ext_trend",
+          "description": "多空意愿指标 BBI",
+          "enabled": true
+        },
+        {
+          "name": "cci_20",
+          "expression": "cci(最高, 最低, 收盘, 20)",
+          "group": "daily_ext_momentum",
+          "description": "商品通道指数 CCI",
+          "enabled": true
+        },
+        {
+          "name": "adx_14",
+          "expression": "adx(最高, 最低, 收盘, 14)",
+          "group": "daily_ext_trend",
+          "description": "动态趋向指标 ADX",
+          "enabled": true
+        },
+        {
+          "name": "psy_12",
+          "expression": "psy(收盘, 12)",
+          "group": "daily_ext_momentum",
+          "description": "心理线",
+          "enabled": true
+        },
+        {
+          "name": "tema_20",
+          "expression": "tema(收盘, 20)",
+          "group": "daily_ext_trend",
+          "description": "三重指数移动平均 TEMA",
+          "enabled": true
+        },
+        {
+          "name": "mfi_14",
+          "expression": "mfi(最高, 最低, 收盘, 成交量, 14)",
+          "group": "daily_ext_volume_flow",
+          "description": "资金流量指标 MFI",
+          "enabled": true
+        },
+        {
+          "name": "ad_line_factor",
+          "expression": "ad_line(最高, 最低, 收盘, 成交量)",
+          "group": "daily_ext_volume_flow",
+          "description": "资金流量累积指标 A/D",
+          "enabled": true
+        },
+        {
+          "name": "chaikin_osc_3_10",
+          "expression": "chaikin_osc(最高, 最低, 收盘, 成交量, 3, 10)",
+          "group": "daily_ext_volume_flow",
+          "description": "蔡金资金流量震荡指标",
+          "enabled": true
+        },
+        {
+          "name": "chaikin_volatility_10",
+          "expression": "chaikin_volatility(最高, 最低, 10)",
+          "group": "daily_ext_volatility",
+          "description": "蔡金波动率指标",
+          "enabled": true
+        },
+        {
+          "name": "imi_14",
+          "expression": "imi(开盘, 收盘, 14)",
+          "group": "daily_ext_momentum",
+          "description": "日内强度指标 IMI",
+          "enabled": true
+        },
+        {
+          "name": "aroon_osc_25",
+          "expression": "aroon_osc(最高, 最低, 25)",
+          "group": "daily_ext_trend",
+          "description": "阿隆振荡指标",
+          "enabled": true
+        },
+        {
+          "name": "cmo_14",
+          "expression": "cmo(收盘, 14)",
+          "group": "daily_ext_momentum",
+          "description": "钱德动量振荡器",
+          "enabled": true
+        },
+        {
+          "name": "vhf_28",
+          "expression": "vhf(最高, 最低, 收盘, 28)",
+          "group": "daily_ext_volatility",
+          "description": "垂直水平滤波指标 VHF",
+          "enabled": true
+        },
+        {
+          "name": "price_dev_ma20",
+          "expression": "price_deviation(收盘, 20)",
+          "group": "daily_ext_trend",
+          "description": "价格偏离20日均线百分比",
+          "enabled": true
+        },
+        {
+          "name": "max_daily_return_20",
+          "expression": "max_daily_return(收盘, 20)",
+          "group": "daily_ext_volatility",
+          "description": "20日窗口最大单日收益率",
+          "enabled": true
+        },
+        {
+          "name": "return_skew_20",
+          "expression": "rolling_skew(pct_change(收盘, 1), 20)",
+          "group": "daily_ext_volatility",
+          "description": "20日滚动收益率偏度",
+          "enabled": true
+        },
+        {
+          "name": "multi_ma_momentum",
+          "expression": "normalized_ma_momentum(收盘, 5, 10, 20, 60)",
+          "group": "daily_ext_trend",
+          "description": "多时域移动平均动量因子",
+          "enabled": true
+        }
+      ],
       "builtin_overrides": []
     }
   }

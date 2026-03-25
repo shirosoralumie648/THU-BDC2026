@@ -3,6 +3,29 @@
     "top_k": 1,
     "weighting": "equal",
     "temperature": 1.0,
-    "validation_return": 0.09632611216511577,
-    "best_epoch": 18
+    "validation_return": 0.036867219083796955,
+    "validation_mode": "rolling",
+    "validation_folds": [
+        {
+            "name": "fold_1",
+            "start_date": "2025-10-29",
+            "end_date": "2025-11-25"
+        },
+        {
+            "name": "fold_2",
+            "start_date": "2025-11-26",
+            "end_date": "2025-12-23"
+        },
+        {
+            "name": "fold_3",
+            "start_date": "2025-12-24",
+            "end_date": "2026-01-22"
+        },
+        {
+            "name": "fold_4",
+            "start_date": "2026-01-23",
+            "end_date": "2026-02-27"
+        }
+    ],
+    "best_epoch": 4
 }
