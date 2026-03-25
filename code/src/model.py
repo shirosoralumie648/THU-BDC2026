@@ -23,16 +23,97 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 class CrossStockAttention(nn.Module):
     """股票间交互注意力模块"""
-    def __init__(self, d_model, nhead, dropout=0.1):
+    def __init__(self, d_model, nhead, dropout=0.1, config=None):
         super(CrossStockAttention, self).__init__()
         self.cross_attention = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
         self.norm = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
-        
-    def forward(self, stock_features):
+        self.nhead = int(nhead)
+
+        config = config or {}
+        self.use_sparse_mask = bool(config.get('use_cross_stock_attention_mask', True))
+        self.mask_mode = str(config.get('cross_stock_mask_mode', 'similarity')).lower()
+        self.similarity_topk = max(1, int(config.get('cross_stock_similarity_topk', 40)))
+
+    def _build_similarity_sparse_mask(self, stock_features, stock_valid_mask):
+        """
+        构造基于同日股票表征余弦相似度的稀疏注意力掩码。
+        返回 MultiheadAttention 需要的 bool 掩码:
+        True = 禁止关注，False = 允许关注。
+        形状: [batch * nhead, num_stocks, num_stocks]
+        """
+        batch_size, num_stocks, _ = stock_features.size()
+        if num_stocks <= 1:
+            return None
+
+        normalized = F.normalize(stock_features, p=2, dim=-1, eps=1e-12)
+        similarity = torch.matmul(normalized, normalized.transpose(1, 2))  # [B, N, N]
+
+        valid_keys = stock_valid_mask.unsqueeze(1).expand(-1, num_stocks, -1)  # [B, N, N]
+        similarity = similarity.masked_fill(~valid_keys, float('-inf'))
+
+        topk = min(self.similarity_topk, num_stocks)
+        topk_indices = torch.topk(similarity, k=topk, dim=-1).indices  # [B, N, topk]
+
+        allowed = torch.zeros(batch_size, num_stocks, num_stocks, dtype=torch.bool, device=stock_features.device)
+        allowed.scatter_(dim=2, index=topk_indices, value=True)
+
+        eye = torch.eye(num_stocks, dtype=torch.bool, device=stock_features.device).unsqueeze(0)
+        valid_pairs = stock_valid_mask.unsqueeze(1) & stock_valid_mask.unsqueeze(2)
+        allowed = (allowed | (eye & valid_pairs)) & valid_keys
+
+        # 对于 padding query，放开到所有有效 key，避免该行全部 -inf 导致数值问题。
+        for b in range(batch_size):
+            valid_key_row = stock_valid_mask[b]
+            if valid_key_row.any():
+                allowed[b, ~stock_valid_mask[b], :] = valid_key_row
+            else:
+                allowed[b, ~stock_valid_mask[b], :] = True
+
+        blocked = ~allowed  # True 表示禁止关注
+        blocked = blocked.unsqueeze(1).expand(-1, self.nhead, -1, -1)
+        return blocked.reshape(batch_size * self.nhead, num_stocks, num_stocks)
+
+    def _build_attention_mask(self, stock_features, stock_indices=None, stock_valid_mask=None):
+        # 预留 stock_indices 入口，便于后续接入“行业先验掩码”。
+        if (not self.use_sparse_mask) or self.mask_mode == 'full':
+            return None
+
+        if stock_valid_mask is None:
+            stock_valid_mask = torch.ones(
+                stock_features.size(0),
+                stock_features.size(1),
+                dtype=torch.bool,
+                device=stock_features.device,
+            )
+        else:
+            stock_valid_mask = stock_valid_mask.bool()
+
+        if self.mask_mode == 'similarity':
+            return self._build_similarity_sparse_mask(stock_features, stock_valid_mask)
+
+        return None
+
+    def forward(self, stock_features, stock_indices=None, stock_valid_mask=None):
         # stock_features: [batch, num_stocks, d_model]
-        # 股票间交互：每只股票都关注其他股票的特征
-        attended, _ = self.cross_attention(stock_features, stock_features, stock_features)
+        # 股票间交互：默认相似度稀疏注意力，抑制全连接噪声扩散。
+        key_padding_mask = None
+        if stock_valid_mask is not None:
+            key_padding_mask = ~stock_valid_mask.bool()
+
+        attn_mask = self._build_attention_mask(
+            stock_features,
+            stock_indices=stock_indices,
+            stock_valid_mask=stock_valid_mask,
+        )
+        attended, _ = self.cross_attention(
+            stock_features,
+            stock_features,
+            stock_features,
+            key_padding_mask=key_padding_mask,
+            attn_mask=attn_mask,
+            need_weights=False,
+        )
         output = self.norm(stock_features + self.dropout(attended))
         return output
 
@@ -93,7 +174,12 @@ class StockTransformer(nn.Module):
         self.feature_attention = FeatureAttention(config['d_model'], config['dropout'])
         
         # 股票间交互注意力
-        self.cross_stock_attention = CrossStockAttention(config['d_model'], config['nhead'], config['dropout'])
+        self.cross_stock_attention = CrossStockAttention(
+            config['d_model'],
+            config['nhead'],
+            config['dropout'],
+            config=config,
+        )
         
         # 排序特异性层
         self.ranking_layers = nn.Sequential(
@@ -126,9 +212,15 @@ class StockTransformer(nn.Module):
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
     
-    def forward(self, src):
+    def forward(self, src, stock_indices=None, stock_valid_mask=None):
         # src: [batch, num_stocks, seq_len, feature_dim]
         batch_size, num_stocks, seq_len, feature_dim = src.size()
+        if stock_valid_mask is None:
+            stock_valid_mask = torch.ones(
+                batch_size, num_stocks, dtype=torch.bool, device=src.device
+            )
+        else:
+            stock_valid_mask = stock_valid_mask.bool()
 
         # 市场状态引导门控：用全市场均值+波动提取当前市场状态，对特征维做动态缩放。
         if self.use_market_gating:
@@ -156,7 +248,11 @@ class StockTransformer(nn.Module):
         stock_features = aggregated_features.view(batch_size, num_stocks, -1)  # [batch, num_stocks, d_model]
         
         # 股票间交互注意力
-        interactive_features = self.cross_stock_attention(stock_features)  # [batch, num_stocks, d_model]
+        interactive_features = self.cross_stock_attention(
+            stock_features,
+            stock_indices=stock_indices,
+            stock_valid_mask=stock_valid_mask,
+        )  # [batch, num_stocks, d_model]
         
         # 重塑回原形状
         interactive_features = interactive_features.view(batch_size * num_stocks, -1)

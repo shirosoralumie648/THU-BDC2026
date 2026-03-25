@@ -19,6 +19,9 @@ config = {
     'listnet_weight': 1.0,   # ListNet 权重
     'lambda_ndcg_weight': 0.8,  # LambdaNDCG 权重
     'lambda_ndcg_topk': 60,  # LambdaNDCG 仅在真实头部样本上构造 pair，控制复杂度
+    # IC 正则：增强预测分数与真实收益的全局相关性（默认 Pearson）
+    'ic_weight': 0.2,
+    'ic_mode': 'pearson',  # pearson | spearman
     'loss_temperature': 10.0,
     'pairwise_top_fraction': 0.1,
     'base_weight': 1.0,
@@ -27,8 +30,15 @@ config = {
     'tail_multiplier': 10.0, 
     'tail_percentile': 0.95, 
 
-    # 训练目标稳健化：标签极值处理 + 截面标准化（按日）
-    'label_extreme_mode': 'clip',   # none | drop | clip | drop_clip
+    # 标签处理：市场中性化 + MAD去极值（按日） + 截面标准化（按日）
+    'use_label_market_neutralization': True,
+    'label_market_neutralization': 'cross_sectional_mean',  # none | cross_sectional_mean
+    'use_label_mad_clip': True,
+    'label_mad_clip_n': 5.0,
+    'label_mad_min_scale': 1e-6,
+    'label_mad_min_group_size': 5,
+    # 损失阶段的额外极值处理（默认关闭；保留兼容）
+    'label_extreme_mode': 'none',   # none | drop | clip | drop_clip | mad_clip | mad_drop | mad_drop_clip
     'label_extreme_lower_quantile': 0.05,
     'label_extreme_upper_quantile': 0.95,
     'use_cross_sectional_label_norm': True,
@@ -39,6 +49,10 @@ config = {
     'use_cross_sectional_feature_norm': True,
     'feature_cs_norm_method': 'zscore',  # zscore | rank
     'feature_cs_clip_value': 5.0,
+    # 股票间交互约束：默认启用相似度稀疏注意力，抑制全连接噪声传播
+    'use_cross_stock_attention_mask': True,
+    'cross_stock_mask_mode': 'similarity',  # full | similarity
+    'cross_stock_similarity_topk': 40,
 
     # 市场状态引导门控（model input gating）
     'use_market_gating': True,

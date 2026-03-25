@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 from tensorboardX import SummaryWriter
 from config import config
@@ -31,6 +30,64 @@ def set_seed(seed=42):
     torch.backends.cudnn.benchmark = False
     os.environ['PYTHONHASHSEED'] = str(seed)
 
+
+def _apply_label_market_neutralization(processed, label_col='label', date_col='日期'):
+    """
+    标签市场中性化：将绝对收益率转为超额收益率(alpha)。
+    当前默认实现为“按日减去全市场均值收益”。
+    """
+    if label_col not in processed.columns:
+        return processed
+    if date_col not in processed.columns:
+        raise ValueError(f'缺少日期列，无法做标签中性化: {date_col}')
+
+    if not bool(config.get('use_label_market_neutralization', True)):
+        return processed
+
+    method = str(config.get('label_market_neutralization', 'cross_sectional_mean')).lower()
+    out = processed.copy()
+    if method == 'none':
+        return out
+    if method == 'cross_sectional_mean':
+        daily_mean = out.groupby(date_col)[label_col].transform('mean')
+        out[label_col] = out[label_col] - daily_mean
+        return out
+
+    raise ValueError(f'不支持的 label_market_neutralization: {method}')
+
+
+def _apply_label_mad_clipping(processed, label_col='label', date_col='日期'):
+    """
+    按日 MAD 去极值，抑制异常收益样本对梯度的破坏。
+    clip 区间: median ± n * 1.4826 * MAD
+    """
+    if label_col not in processed.columns or date_col not in processed.columns:
+        return processed
+    if not bool(config.get('use_label_mad_clip', True)):
+        return processed
+
+    mad_n = float(config.get('label_mad_clip_n', 5.0))
+    mad_min_scale = float(config.get('label_mad_min_scale', 1e-6))
+    min_group_size = int(config.get('label_mad_min_group_size', 5))
+    min_group_size = max(1, min_group_size)
+
+    out = processed.copy()
+    group_size = out.groupby(date_col)[label_col].transform('size')
+    apply_mask = group_size >= min_group_size
+    if not bool(apply_mask.any()):
+        return out
+
+    median = out.groupby(date_col)[label_col].transform('median')
+    abs_dev = (out[label_col] - median).abs()
+    mad = abs_dev.groupby(out[date_col]).transform('median')
+    robust_sigma = (mad * 1.4826).clip(lower=mad_min_scale)
+    lower = median - mad_n * robust_sigma
+    upper = median + mad_n * robust_sigma
+    clipped = out[label_col].clip(lower=lower, upper=upper)
+    out.loc[apply_mask, label_col] = clipped.loc[apply_mask]
+    return out
+
+
 def _build_label_and_clean(processed, drop_small_open=True):
     """统一构建标签并清洗无效样本。"""
     processed = processed.copy()
@@ -45,6 +102,14 @@ def _build_label_and_clean(processed, drop_small_open=True):
         (processed['open_t5'] - processed['open_t1']) / (processed['open_t1'] + 1e-12)
     )
     processed = processed.dropna(subset=['label']).copy()
+    processed.loc[:, 'label_raw'] = processed['label'].astype(np.float32)
+
+    # 标签处理关键修正：
+    # 1) 市场中性化 -> 预测超额收益率(alpha)；
+    # 2) MAD 去极值 -> 抑制异常波动样本对训练的干扰。
+    processed = _apply_label_market_neutralization(processed, label_col='label', date_col='日期')
+    processed = _apply_label_mad_clipping(processed, label_col='label', date_col='日期')
+    processed.loc[:, 'label'] = processed['label'].astype(np.float32)
 
     processed = processed.drop(columns=['open_t1', 'open_t5'])
     return processed
@@ -111,6 +176,7 @@ class PortfolioOptimizationLoss(nn.Module):
     - ListNet：全局分布对齐；
     - Pairwise RankNet：强化头部排序；
     - LambdaNDCG：直接逼近 Top-K 排序目标。
+    - IC 正则：提升预测分数与真实收益的全局相关性。
     """
     def __init__(
         self,
@@ -119,6 +185,8 @@ class PortfolioOptimizationLoss(nn.Module):
         pairwise_weight=1.0,
         lambda_ndcg_weight=1.0,
         lambda_ndcg_topk=50,
+        ic_weight=0.0,
+        ic_mode='pearson',
     ):
         super(PortfolioOptimizationLoss, self).__init__()
         self.temperature = float(temperature)
@@ -126,6 +194,8 @@ class PortfolioOptimizationLoss(nn.Module):
         self.pairwise_weight = float(pairwise_weight)
         self.lambda_ndcg_weight = float(lambda_ndcg_weight)
         self.lambda_ndcg_topk = int(lambda_ndcg_topk)
+        self.ic_weight = float(ic_weight)
+        self.ic_mode = str(ic_mode).lower()
 
     def _pairwise_ranknet_loss(self, y_pred, y_true):
         n = y_true.numel()
@@ -183,6 +253,37 @@ class PortfolioOptimizationLoss(nn.Module):
         weighted_pair_loss = F.softplus(-pred_diff) * delta_ndcg
         return weighted_pair_loss[pair_mask].mean()
 
+    def _pearson_corr(self, x, y):
+        if x.numel() <= 1:
+            return x.new_zeros(())
+        x_centered = x - x.mean()
+        y_centered = y - y.mean()
+        x_std = torch.sqrt((x_centered ** 2).mean() + 1e-12)
+        y_std = torch.sqrt((y_centered ** 2).mean() + 1e-12)
+        corr = (x_centered * y_centered).mean() / (x_std * y_std + 1e-12)
+        return torch.clamp(corr, min=-1.0, max=1.0)
+
+    def _rankize(self, values):
+        n = values.numel()
+        if n <= 1:
+            return values.new_zeros(values.shape)
+        order = torch.argsort(values)
+        ranks = torch.empty_like(values, dtype=torch.float32)
+        ranks[order] = torch.arange(n, device=values.device, dtype=torch.float32)
+        return ranks
+
+    def _ic_regularization_loss(self, y_pred, y_true):
+        if self.ic_weight <= 0.0:
+            return y_pred.new_zeros(())
+        if self.ic_mode == 'pearson':
+            corr = self._pearson_corr(y_pred, y_true)
+        elif self.ic_mode in {'spearman', 'rank'}:
+            corr = self._pearson_corr(self._rankize(y_pred), self._rankize(y_true))
+        else:
+            raise ValueError(f'不支持的 ic_mode: {self.ic_mode}')
+        # 与建议一致：最小化 -corr，等价于最大化 corr。
+        return -corr
+
     def forward(self, y_pred, y_true):
         """
         y_pred: [1, num_items]
@@ -196,11 +297,13 @@ class PortfolioOptimizationLoss(nn.Module):
         y_true_flat = y_true.squeeze(0)
         pairwise_loss = self._pairwise_ranknet_loss(y_pred_flat, y_true_flat)
         lambda_ndcg_loss = self._lambda_ndcg_loss(y_pred_flat, y_true_flat)
+        ic_loss = self._ic_regularization_loss(y_pred_flat, y_true_flat)
 
         return (
             self.listnet_weight * listnet_loss
             + self.pairwise_weight * pairwise_loss
             + self.lambda_ndcg_weight * lambda_ndcg_loss
+            + self.ic_weight * ic_loss
         )
 
 
@@ -214,20 +317,42 @@ def _tensor_rank_normalize(values):
     return (ranks / max(n - 1, 1)) * 2.0 - 1.0
 
 
+def _tensor_mad_bounds(values, mad_n=5.0, mad_min_scale=1e-6):
+    median = torch.median(values)
+    mad = torch.median(torch.abs(values - median))
+    robust_sigma = torch.clamp(mad * 1.4826, min=float(mad_min_scale))
+    lower = median - float(mad_n) * robust_sigma
+    upper = median + float(mad_n) * robust_sigma
+    return lower, upper
+
+
 def transform_targets_for_loss(valid_pred, valid_target):
     """
     为损失函数准备训练目标：
     1) 极值样本 drop / clip；
     2) 截面标准化（zscore/rank）。
     """
-    mode = str(config.get('label_extreme_mode', 'clip')).lower()
+    mode = str(config.get('label_extreme_mode', 'none')).lower()
     lower_q = float(config.get('label_extreme_lower_quantile', 0.05))
     upper_q = float(config.get('label_extreme_upper_quantile', 0.95))
     lower_q = max(0.0, min(lower_q, 0.49))
     upper_q = min(1.0, max(upper_q, 0.51))
+    mad_n = float(config.get('label_mad_clip_n', 5.0))
+    mad_min_scale = float(config.get('label_mad_min_scale', 1e-6))
 
     pred = valid_pred
     target = valid_target
+
+    if mode in {'mad_drop', 'mad_drop_clip'} and target.numel() > 5:
+        lower, upper = _tensor_mad_bounds(target, mad_n=mad_n, mad_min_scale=mad_min_scale)
+        keep_mask = (target >= lower) & (target <= upper)
+        if int(keep_mask.sum().item()) >= 2:
+            pred = pred[keep_mask]
+            target = target[keep_mask]
+
+    if mode in {'mad_clip', 'mad_drop_clip'} and target.numel() > 2:
+        lower, upper = _tensor_mad_bounds(target, mad_n=mad_n, mad_min_scale=mad_min_scale)
+        target = torch.clamp(target, min=lower, max=upper)
 
     if mode in {'drop', 'drop_clip'} and target.numel() > 5:
         lower = torch.quantile(target, lower_q)
@@ -697,12 +822,18 @@ def train_ranking_model(model, dataloader, criterion, optimizer, device, epoch, 
     for batch in tqdm(dataloader, desc=f"Training Epoch {epoch+1}"):
         sequences = batch['sequences'].to(device)    # [batch, max_stocks, seq_len, features]
         targets = batch['targets'].to(device)        # [batch, max_stocks] 真实涨跌幅
+        stock_indices = batch['stock_indices'].to(device)  # [batch, max_stocks]
         masks = batch['masks'].to(device)            # [batch, max_stocks] 有效位置mask
+        stock_valid_mask = masks > 0.5
         
         optimizer.zero_grad()
         
         # 模型预测
-        outputs = model(sequences)  # [batch, max_stocks] 预测分数
+        outputs = model(
+            sequences,
+            stock_indices=stock_indices,
+            stock_valid_mask=stock_valid_mask,
+        )  # [batch, max_stocks] 预测分数
         
         # 应用mask，只考虑有效股票
         masked_outputs = outputs * masks + (1 - masks) * (-1e9)  # 无效位置设为很小的值
@@ -790,14 +921,20 @@ def evaluate_ranking_model(
         for batch in tqdm(dataloader, desc=f"Evaluating Epoch {epoch+1}"):
             sequences = batch['sequences'].to(device)
             targets = batch['targets'].to(device)
+            stock_indices = batch['stock_indices'].to(device)
             masks = batch['masks'].to(device)
+            stock_valid_mask = masks > 0.5
 
             if ablation_feature_indices:
                 sequences = sequences.clone()
                 sequences[:, :, :, ablation_feature_indices] = 0
             
             # 模型预测
-            outputs = model(sequences)
+            outputs = model(
+                sequences,
+                stock_indices=stock_indices,
+                stock_valid_mask=stock_valid_mask,
+            )
             
             # 应用mask
             masked_outputs = outputs * masks + (1 - masks) * (-1e9)
@@ -1015,10 +1152,16 @@ def predict_top_stocks(model, data, features, sequence_length, scaler, stockid2i
     
     # 转换为tensor
     sequences = torch.FloatTensor(np.array(day_sequences)).unsqueeze(0).to(device)  # [1, num_stocks, seq_len, features]
+    stock_indices = torch.LongTensor(np.array(day_stock_indices, dtype=np.int64)).unsqueeze(0).to(device)
+    stock_valid_mask = torch.ones_like(stock_indices, dtype=torch.bool, device=device)
     
     with torch.no_grad():
         # 模型预测
-        outputs = model(sequences)  # [1, num_stocks]
+        outputs = model(
+            sequences,
+            stock_indices=stock_indices,
+            stock_valid_mask=stock_valid_mask,
+        )  # [1, num_stocks]
         scores = outputs.squeeze().cpu().numpy()  # [num_stocks]
         
         # 获取排名前top_k的股票
@@ -1252,20 +1395,24 @@ def main():
     train_data, features = preprocess_data(train_df, factor_pipeline, is_train=True, stockid2idx=stockid2idx)
     val_data, _ = preprocess_val_data(val_df, factor_pipeline, stockid2idx=stockid2idx)
     
-    # 3. 标准化
-    scaler = StandardScaler()
-
+    # 3. 特征缩放（默认仅保留截面标准化，不做全局 StandardScaler）
+    scaler_path = os.path.join(output_dir, 'scaler.pkl')
     train_data[features] = train_data[features].replace([np.inf, -np.inf], np.nan)
     val_data[features] = val_data[features].replace([np.inf, -np.inf], np.nan)
     # 丢弃nan数据
     train_data = train_data.dropna(subset=features)
     val_data = val_data.dropna(subset=features)
-    # 然后再缩放
+
     histogram_features = features[:max(0, int(config.get('factor_histogram_max_features', 0)))]
     raw_train_hist_frame = train_data[histogram_features].copy() if histogram_features else None
-    train_data[features] = scaler.fit_transform(train_data[features]).astype(np.float32)
-    val_data[features] = scaler.transform(val_data[features]).astype(np.float32)
-    joblib.dump(scaler, os.path.join(output_dir, 'scaler.pkl'))
+
+    # 关键修正：仅按日截面标准化（已在 preprocess_* 中完成），
+    # 这里明确禁用全局拟合缩放，避免时序泄露并保留日内相对强弱。
+    train_data[features] = train_data[features].astype(np.float32)
+    val_data[features] = val_data[features].astype(np.float32)
+    joblib.dump({'type': 'identity', 'name': 'cross_sectional_only'}, scaler_path)
+    print('已固定为截面标准化，禁用全局 StandardScaler。')
+
     scaled_train_hist_frame = train_data[histogram_features] if histogram_features else None
     log_factor_dashboard(writer, factor_pipeline, raw_train_hist_frame, scaled_train_hist_frame)
 
@@ -1308,6 +1455,8 @@ def main():
         pairwise_weight=float(config.get('pairwise_weight', 1.0)),
         lambda_ndcg_weight=float(config.get('lambda_ndcg_weight', 1.0)),
         lambda_ndcg_topk=int(config.get('lambda_ndcg_topk', 50)),
+        ic_weight=float(config.get('ic_weight', 0.0)),
+        ic_mode=str(config.get('ic_mode', 'pearson')),
     )
     optimizer = torch.optim.AdamW(model.parameters(), lr=config['learning_rate'], weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.2, total_iters=config['num_epochs'])

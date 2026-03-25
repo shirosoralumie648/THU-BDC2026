@@ -125,6 +125,33 @@ def scores_to_portfolio(scores, stock_ids, strategy):
 	return selected_ids, weights
 
 
+def apply_optional_global_scaler(processed, features, scaler_path):
+	"""
+	兼容三种缩放状态：
+	1) 新版默认：identity（仅截面标准化）；
+	2) 旧版：sklearn StandardScaler；
+	3) 缺失 scaler.pkl：回退 identity。
+	"""
+	if not os.path.exists(scaler_path):
+		print(f'未找到 scaler 文件，回退为 identity: {scaler_path}')
+		return processed
+
+	scaler = joblib.load(scaler_path)
+	if isinstance(scaler, dict):
+		scaler_type = str(scaler.get('type', 'identity')).lower()
+		if scaler_type == 'identity':
+			print('检测到 identity scaler，跳过全局缩放（仅截面标准化）。')
+			return processed
+		raise ValueError(f'不支持的 scaler 元数据类型: {scaler_type}')
+
+	if hasattr(scaler, 'transform'):
+		processed[features] = scaler.transform(processed[features]).astype(np.float32)
+		print('检测到旧版 StandardScaler，已应用全局缩放（兼容模式）。')
+		return processed
+
+	raise TypeError(f'无法识别的 scaler 类型: {type(scaler)}')
+
+
 def main():
 	data_file = os.path.join(config['data_path'], 'train.csv')
 	model_path = os.path.join(config['output_dir'], 'best_model.pth')
@@ -134,8 +161,6 @@ def main():
 
 	if not os.path.exists(model_path):
 		raise FileNotFoundError(f'未找到模型文件: {model_path}')
-	if not os.path.exists(scaler_path):
-		raise FileNotFoundError(f'未找到Scaler文件: {scaler_path}')
 
 	raw_df = pd.read_csv(data_file, dtype={'股票代码': str})
 	raw_df['股票代码'] = raw_df['股票代码'].astype(str).str.zfill(6)
@@ -157,9 +182,7 @@ def main():
 
 	processed, features = preprocess_predict_data(raw_df, stockid2idx, feature_pipeline)
 	processed[features] = processed[features].replace([np.inf, -np.inf], np.nan).fillna(0.0)
-
-	scaler = joblib.load(scaler_path)
-	processed[features] = scaler.transform(processed[features])
+	processed = apply_optional_global_scaler(processed, features, scaler_path)
 
 	sequence_length = config['sequence_length']
 	sequences_np, sequence_stock_ids = build_inference_sequences(
@@ -194,7 +217,17 @@ def main():
 
 	with torch.no_grad():
 		x = torch.from_numpy(sequences_np).unsqueeze(0).to(device)  # [1, N, L, F]
-		scores = model(x).squeeze(0).detach().cpu().numpy()         # [N]
+		stock_indices = torch.tensor(
+			[[stockid2idx[sid] for sid in sequence_stock_ids]],
+			dtype=torch.long,
+			device=device,
+		)
+		stock_valid_mask = torch.ones_like(stock_indices, dtype=torch.bool, device=device)
+		scores = model(
+			x,
+			stock_indices=stock_indices,
+			stock_valid_mask=stock_valid_mask,
+		).squeeze(0).detach().cpu().numpy()         # [N]
 
 	selected_ids, weights = scores_to_portfolio(scores, sequence_stock_ids, strategy)
 
