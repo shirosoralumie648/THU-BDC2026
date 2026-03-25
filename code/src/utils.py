@@ -536,7 +536,14 @@ def create_dataset(data, features, sequence_length, ranking_data_path=None):
     """保持原有接口，但内部调用新的排序数据集创建函数"""
     return create_ranking_dataset_multiprocess(data, features, sequence_length, ranking_data_path)
 
-def create_ranking_dataset_vectorized(data, features, sequence_length, ranking_data_path=None, min_window_end_date=None):
+def create_ranking_dataset_vectorized(
+    data,
+    features,
+    sequence_length,
+    ranking_data_path=None,
+    min_window_end_date=None,
+    max_window_end_date=None,
+):
     """
     向量化加速版本：预计算每只股票的所有滑动窗口，再按日期聚合。
     保持与原函数完全相同的输出格式。
@@ -560,8 +567,11 @@ def create_ranking_dataset_vectorized(data, features, sequence_length, ranking_d
     # 3. 为每只股票生成所有滑动窗口
     # 仅保留满足以下条件的 end_date：
     # - 历史窗口长度满足 sequence_length
-    # - end_date 之后存在 5 条未来数据
-    # - 这 5 条未来数据在自然日上连续（任意节假日/周末导致的日期跳跃都会被过滤）
+    #
+    # 注意：data 在进入这里之前已经按 label 做过 dropna。
+    # 也就是说，保留下来的每一行都已经满足
+    # T+1 开盘买入到 T+5 开盘卖出的收益率可计算，
+    # 这里不应再额外要求未来 5 个交易日，否则会重复缩短样本。
     all_windows = []  # 每个元素: (end_date, stock_code, sequence, target)
 
     print("Step 1: 为每只股票生成滑动窗口...")
@@ -575,23 +585,11 @@ def create_ranking_dataset_vectorized(data, features, sequence_length, ranking_d
         feature_values = group[features].values.astype(np.float32)  # (T, F)
         labels = group['label'].values.astype(np.float32)           # (T,)
         dates = group['datetime'].values                            # (T,)
-        dates_day = group['datetime'].values.astype('datetime64[D]')
 
         # 生成滑动窗口：从第 sequence_length-1 行开始（0-indexed）
         num_windows = len(group) - sequence_length + 1
-        n = len(group)
         for i in range(num_windows):
             end_idx = i + sequence_length - 1
-
-            # 需要有未来 5 条数据
-            if end_idx + 5 >= n:
-                continue
-
-            # 未来 5 条数据日期必须连续（自然日相邻）
-            future_dates = dates_day[end_idx + 1:end_idx + 6]
-            future_diffs = np.diff(future_dates).astype(np.int64)
-            if not np.all(future_diffs == 1):
-                continue
 
             seq = feature_values[i : i + sequence_length]   # (L, F)
             target = labels[end_idx]                        # label 对应窗口最后一天的次日涨跌幅
@@ -613,9 +611,13 @@ def create_ranking_dataset_vectorized(data, features, sequence_length, ranking_d
 
     if min_window_end_date is not None:
         min_window_end_date = pd.to_datetime(min_window_end_date)
+    if max_window_end_date is not None:
+        max_window_end_date = pd.to_datetime(max_window_end_date)
     
     for date, group in tqdm(grouped_by_date, desc="Aggregating by date"):
         if min_window_end_date is not None and pd.to_datetime(date) < min_window_end_date:
+            continue
+        if max_window_end_date is not None and pd.to_datetime(date) > max_window_end_date:
             continue
 
         if len(group) < 10:
@@ -626,11 +628,9 @@ def create_ranking_dataset_vectorized(data, features, sequence_length, ranking_d
         day_targets = group['target'].values              # (N,)
         day_stocks = group['stock_code'].tolist()         # [str]
 
-        # 计算 relevance（与原逻辑一致）
-        sorted_indices = np.argsort(day_targets)[::-1]
-        relevance = np.zeros_like(day_targets, dtype=np.float32)
-        for rank, idx in enumerate(sorted_indices):
-            relevance[idx] = len(day_targets) - rank
+        # 计算 relevance（新逻辑：是否属于全市场前 2% 的妖股）
+        threshold_2pct = np.quantile(day_targets, 0.98)
+        relevance = (day_targets >= threshold_2pct).astype(np.float32)
 
         sequences.append(day_seqs)
         targets.append(day_targets)

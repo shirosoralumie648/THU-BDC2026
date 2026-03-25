@@ -8,14 +8,18 @@ from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 from tensorboardX import SummaryWriter
 from config import config
+from factor_store import engineer_group_features
+from factor_store import resolve_factor_pipeline
+from factor_store import save_factor_snapshot
 from model import StockTransformer
-from utils import engineer_features_39, engineer_features_158plus39
 from utils import create_ranking_dataset_vectorized
 import joblib
 import os
 import json
 import multiprocessing as mp
 import random
+
+
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
@@ -25,17 +29,6 @@ def set_seed(seed=42):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     os.environ['PYTHONHASHSEED'] = str(seed)
-
-feature_cloums_map = {
-    '39': ['instrument','开盘', '收盘', '最高', '最低', '成交量', '成交额', '振幅', '涨跌额', '换手率', '涨跌幅','sma_5', 'sma_20', 'ema_12', 'ema_26', 'rsi', 'macd', 'macd_signal', 'volume_change', 'obv','volume_ma_5', 'volume_ma_20', 'volume_ratio', 'kdj_k', 'kdj_d', 'kdj_j', 'boll_mid', 'boll_std', 'atr_14', 'ema_60', 'volatility_10', 'volatility_20', 'return_1', 'return_5', 'return_10',  'high_low_spread', 'open_close_spread', 'high_close_spread', 'low_close_spread', 'mom_acc', 'pv_div', 'consecutive_pos'],
-
-    '158+39': ['instrument','开盘', '收盘', '最高', '最低', '成交量', '成交额', '振幅', '涨跌额', '换手率', '涨跌幅','KMID', 'KLEN', 'KMID2', 'KUP', 'KUP2', 'KLOW', 'KLOW2', 'KSFT', 'KSFT2', 'OPEN0', 'HIGH0', 'LOW0', 'VWAP0', 'ROC5', 'ROC10', 'ROC20', 'ROC30', 'ROC60', 'MA5', 'MA10', 'MA20', 'MA30', 'MA60', 'STD5', 'STD10', 'STD20', 'STD30', 'STD60', 'BETA5', 'BETA10', 'BETA20', 'BETA30', 'BETA60', 'RSQR5', 'RSQR10', 'RSQR20', 'RSQR30', 'RSQR60', 'RESI5', 'RESI10', 'RESI20', 'RESI30', 'RESI60', 'MAX5', 'MAX10', 'MAX20', 'MAX30', 'MAX60', 'MIN5', 'MIN10', 'MIN20', 'MIN30', 'MIN60', 'QTLU5', 'QTLU10', 'QTLU20', 'QTLU30', 'QTLU60', 'QTLD5', 'QTLD10', 'QTLD20', 'QTLD30', 'QTLD60', 'RANK5', 'RANK10', 'RANK20', 'RANK30', 'RANK60', 'RSV5', 'RSV10', 'RSV20', 'RSV30', 'RSV60', 'IMAX5', 'IMAX10', 'IMAX20', 'IMAX30', 'IMAX60', 'IMIN5', 'IMIN10', 'IMIN20', 'IMIN30', 'IMIN60', 'IMXD5', 'IMXD10', 'IMXD20', 'IMXD30', 'IMXD60', 'CORR5', 'CORR10', 'CORR20', 'CORR30', 'CORR60', 'CORD5', 'CORD10', 'CORD20', 'CORD30', 'CORD60', 'CNTP5', 'CNTP10', 'CNTP20', 'CNTP30', 'CNTP60', 'CNTN5', 'CNTN10', 'CNTN20', 'CNTN30', 'CNTN60', 'CNTD5', 'CNTD10', 'CNTD20', 'CNTD30', 'CNTD60', 'SUMP5', 'SUMP10', 'SUMP20', 'SUMP30', 'SUMP60', 'SUMN5', 'SUMN10', 'SUMN20', 'SUMN30', 'SUMN60', 'SUMD5', 'SUMD10', 'SUMD20', 'SUMD30', 'SUMD60', 'VMA5', 'VMA10', 'VMA20', 'VMA30', 'VMA60', 'VSTD5', 'VSTD10', 'VSTD20', 'VSTD30', 'VSTD60', 'WVMA5', 'WVMA10', 'WVMA20', 'WVMA30', 'WVMA60', 'VSUMP5', 'VSUMP10', 'VSUMP20', 'VSUMP30', 'VSUMP60', 'VSUMN5', 'VSUMN10', 'VSUMN20', 'VSUMN30', 'VSUMN60', 'VSUMD5', 'VSUMD10', 'VSUMD20', 'VSUMD30', 'VSUMD60','sma_5', 'sma_20', 'ema_12', 'ema_26', 'rsi', 'macd', 'macd_signal', 'volume_change', 'obv', 'volume_ma_5', 'volume_ma_20', 'volume_ratio', 'kdj_k', 'kdj_d', 'kdj_j', 'boll_mid', 'boll_std', 'atr_14', 'ema_60', 'volatility_10', 'volatility_20', 'return_1', 'return_5', 'return_10',  'high_low_spread', 'open_close_spread', 'high_close_spread', 'low_close_spread', 'mom_acc', 'pv_div', 'consecutive_pos']
-}
-feature_engineer_func_map = {
-    '39': engineer_features_39,
-    '158+39': engineer_features_158plus39
-}
-
 
 def _build_label_and_clean(processed, drop_small_open=True):
     """统一构建标签并清洗无效样本。"""
@@ -53,11 +46,11 @@ def _build_label_and_clean(processed, drop_small_open=True):
     return processed
 
 
-def _preprocess_common(df, stockid2idx, desc, drop_small_open=True):
-    assert config['feature_num'] in feature_engineer_func_map, f"Unsupported feature_num: {config['feature_num']}"
+def _preprocess_common(df, stockid2idx, desc, feature_pipeline, drop_small_open=True):
     assert stockid2idx is not None, "stockid2idx 不能为空"
-    feature_engineer = feature_engineer_func_map[config['feature_num']]
-    feature_columns = feature_cloums_map[config['feature_num']]
+    feature_columns = feature_pipeline['active_features']
+    custom_factor_specs = feature_pipeline['custom_specs']
+    builtin_override_specs = feature_pipeline.get('builtin_override_specs', [])
 
     # 保证时序正确，避免 shift 标签错位
     df = df.copy()
@@ -68,9 +61,13 @@ def _preprocess_common(df, stockid2idx, desc, drop_small_open=True):
     if len(groups) == 0:
         raise ValueError(f"{desc}输入为空，无法继续")
 
-    num_processes = min(10, mp.cpu_count())
+    num_processes = min(int(config.get('feature_engineer_processes', 4)), mp.cpu_count())
     with mp.Pool(processes=num_processes) as pool:
-        processed_list = list(tqdm(pool.imap(feature_engineer, groups), total=len(groups), desc=desc))
+        tasks = [
+            (group, feature_pipeline['feature_set'], builtin_override_specs, custom_factor_specs)
+            for group in groups
+        ]
+        processed_list = list(tqdm(pool.imap(engineer_group_features, tasks), total=len(groups), desc=desc))
 
     processed = pd.concat(processed_list).reset_index(drop=True)
 
@@ -84,165 +81,267 @@ def _preprocess_common(df, stockid2idx, desc, drop_small_open=True):
 
 
 # 数据预处理函数
-def preprocess_data(df, is_train=True, stockid2idx=None):
+def preprocess_data(df, feature_pipeline, is_train=True, stockid2idx=None):
     if not is_train:
-        return _preprocess_common(df, stockid2idx, desc="特征工程", drop_small_open=False)
-    return _preprocess_common(df, stockid2idx, desc="特征工程", drop_small_open=True)
+        return _preprocess_common(df, stockid2idx, desc="特征工程", feature_pipeline=feature_pipeline, drop_small_open=False)
+    return _preprocess_common(df, stockid2idx, desc="特征工程", feature_pipeline=feature_pipeline, drop_small_open=True)
 
 
-def preprocess_val_data(df, stockid2idx=None):
+def preprocess_val_data(df, feature_pipeline, stockid2idx=None):
     # 验证集与训练集保持同口径，避免 label 分布漂移
-    return _preprocess_common(df, stockid2idx, desc="验证集特征工程", drop_small_open=True)
+    return _preprocess_common(df, stockid2idx, desc="验证集特征工程", feature_pipeline=feature_pipeline, drop_small_open=True)
 
 
-# 加权的排序损失函数
-class WeightedRankingLoss(nn.Module):
+# 加权的组合收益排序损失函数
+class PortfolioOptimizationLoss(nn.Module):
     """
-    组合的加权排序损失函数，着重强调top-k的样本。
+    针对量化排序直接优化投资组合收益的损失函数。
+    结合 ListNet (全局分布对齐) 和 加权 RankNet (强化头部收益)，直接最大化强个股得分。
     """
-    def __init__(self, temperature=1.0, k=5, weight_factor=2.0, pairwise_weight=1, base_weight=1.0, tail_multiplier=10.0, tail_percentile=0.95):
-        super(WeightedRankingLoss, self).__init__()
+    def __init__(self, temperature=10.0, pairwise_weight=1.0):
+        super(PortfolioOptimizationLoss, self).__init__()
         self.temperature = temperature
-        self.k = k
-        self.weight_factor = weight_factor
         self.pairwise_weight = pairwise_weight
-        self.base_weight = base_weight
-        self.tail_multiplier = tail_multiplier
-        self.tail_percentile = tail_percentile
 
-    def listwise_loss(self, y_pred, y_true, weights):
-        """加权的Listwise损失 (KL散度 + Cross Entropy)"""
-        
-        pred_probs = F.softmax(y_pred / self.temperature, dim=1)
-        target_probs = F.softmax(y_true / self.temperature, dim=1)
-
-        # 加权 Cross Entropy（原实现未使用 weights）
-        weighted_ce = -(target_probs * torch.log(pred_probs + 1e-12) * weights)
-        ce_loss = (weighted_ce.sum(dim=1) / (weights.sum(dim=1) + 1e-12)).mean()
-        
-        return ce_loss
-
-    def pairwise_loss(self, y_pred, y_true, weights):
-        """加权的Pairwise损失"""
-        batch_size, num_items = y_pred.size()
-        
-        pred_diff = y_pred.unsqueeze(2) - y_pred.unsqueeze(1)
-        true_diff = y_true.unsqueeze(2) - y_true.unsqueeze(1)
-        
-        # 只考虑真实标签不同的项目对
-        mask = (true_diff != 0).float()
-        
-        # 创建权重矩阵
-        # 如果一对(i, j)中，i或j是关键样本，则权重更高
-        weight_matrix = weights.unsqueeze(2) + weights.unsqueeze(1)
-        # weight_matrix = torch.where(weight_matrix > 2.0, self.weight_factor, 1.0)
-        
-        pairwise_loss = torch.sigmoid(-pred_diff * torch.sign(true_diff))
-        
-        # 应用mask和权重
-        weighted_loss = pairwise_loss * mask * weight_matrix
-        
-        num_pairs = mask.sum(dim=[1, 2]).clamp(min=1)
-        loss = (weighted_loss.sum(dim=[1, 2]) / num_pairs).mean()
-        
-        return loss
-        
     def forward(self, y_pred, y_true):
         """
-        y_pred: [batch, num_items]
-        y_true: [batch, num_items] (真实涨跌幅)
+        y_pred: [1, num_items]
+        y_true: [1, num_items] (实际收益率)
         """
-        batch_size, num_items = y_true.size()
-        k = min(self.k, num_items)
+        # 1. ListNet Loss (全局分布对齐)
+        # 放大极端正收益影响，构建期望的收益概率分布
+        P_true = F.softmax(y_true * self.temperature, dim=1)
+        # 用 log 分布对齐 y_pred
+        P_pred = F.log_softmax(y_pred, dim=1)
+        listnet_loss = -torch.sum(P_true * P_pred, dim=1).mean()
+        
+        # 2. Top-K Pairwise RankNet Loss (极大化右尾极值)
+        # 剥离多余维度 [N]
+        y_pred = y_pred.squeeze(0)
+        y_true = y_true.squeeze(0)
+        
+        # 为了提高效率并且专注于挑出最好的股票，我们只选取真实收益最高的前 10%
+        # 将它们与所有其他股票进行配对比较
+        k = max(1, int(len(y_true) * 0.1))
+        _, top_true_indices = torch.topk(y_true, k)
+        
+        y_pred_top = y_pred[top_true_indices]
+        y_true_top = y_true[top_true_indices]
+        
+        # 构建预测差值和真实差值矩阵 [k, N]
+        pred_diff = y_pred_top.unsqueeze(1) - y_pred.unsqueeze(0)
+        true_diff = y_true_top.unsqueeze(1) - y_true.unsqueeze(0)
+        
+        # 只取真实的收益差 (好 vs 坏)
+        mask = (true_diff > 0).float()
+        
+        # Pairwise Loss: 分数必须对应真实收益差；收益差距越大的 pair，惩罚权重越大
+        pairwise_loss = (F.softplus(-pred_diff) * mask * true_diff).sum() / (mask.sum() + 1e-8)
+        
+        return listnet_loss + self.pairwise_weight * pairwise_loss
 
-        # 1. 识别 top-k 的样本 (保持原有逻辑，针对每组内部排序)
-        _, top_indices = torch.topk(y_true, k, dim=1)
-        
-        # 2. 创建权重向量
-        weights = torch.full_like(y_true, fill_value=self.base_weight)
-        for i in range(batch_size):
-            weights[i, top_indices[i]] = self.weight_factor
-            
-            # 3. 增强右尾数据权重 (基于绝对收益率)
-            # 计算该 batch 的右尾阈值
-            valid_y = y_true[i]
-            if valid_y.numel() > 0:
-                threshold = torch.quantile(valid_y, self.tail_percentile)
-                tail_mask = valid_y >= threshold
-                # 将右尾数据的权重乘以 tail_multiplier
-                weights[i, tail_mask] *= self.tail_multiplier
-            
-        # 3. 计算加权损失
-        listwise = self.listwise_loss(y_pred, y_true, weights)
-        pairwise = self.pairwise_loss(y_pred, y_true, weights)
-        
-        # 组合两种损失
-        total_loss = listwise + self.pairwise_weight * pairwise
-        
-        return total_loss
 
-def calculate_ranking_metrics(y_pred, y_true, masks, k=5):
-    """计算新的评估指标：Top 5 收益之和，以及与理论最高值和随机值的比值"""
+def build_strategy_candidates():
+    top_k_candidates = sorted({int(k) for k in config.get('prediction_top_k_candidates', [5]) if 1 <= int(k) <= 5})
+    weighting_candidates = list(dict.fromkeys(config.get('prediction_weighting_candidates', ['equal'])))
+
+    candidates = []
+    for top_k in top_k_candidates:
+        for weighting in weighting_candidates:
+            if weighting not in {'equal', 'softmax'}:
+                continue
+            if weighting == 'softmax' and top_k == 1:
+                continue
+            candidates.append({
+                'name': f'{weighting}_top{top_k}',
+                'top_k': top_k,
+                'weighting': weighting,
+            })
+
+    if not candidates:
+        candidates = [{'name': 'equal_top5', 'top_k': 5, 'weighting': 'equal'}]
+    return candidates
+
+
+def build_portfolio_weights(scores, top_k, weighting='equal', temperature=1.0):
+    top_k = min(int(top_k), scores.numel())
+    top_scores, top_indices = torch.topk(scores, top_k)
+
+    if weighting == 'equal' or top_k == 1:
+        weights = torch.full(
+            (top_k,),
+            1.0 / top_k,
+            dtype=top_scores.dtype,
+            device=top_scores.device
+        )
+    elif weighting == 'softmax':
+        temperature = max(float(temperature), 1e-6)
+        weights = torch.softmax(top_scores / temperature, dim=0)
+    else:
+        raise ValueError(f'不支持的权重方式: {weighting}')
+
+    return top_indices, weights
+
+
+def calculate_ranking_metrics(y_pred, y_true, masks, strategy_candidates=None, temperature=1.0):
+    """按候选持仓策略计算验证收益率，直接服务于最终总收益目标。"""
     batch_size = y_pred.size(0)
-    
-    # Metrics accumulators
-    pred_return_sum_list = []
-    max_return_sum_list = []
-    random_return_sum_list = []
-    ratio_pred_list = []
-    ratio_random_list = []
-    final_score_list = []
-    
+
+    if strategy_candidates is None:
+        strategy_candidates = [{'name': 'equal_top5', 'top_k': 5, 'weighting': 'equal'}]
+
+    metrics_lists = {f'return_{candidate["name"]}': [] for candidate in strategy_candidates}
+    max_top_k = max(candidate['top_k'] for candidate in strategy_candidates)
+    oracle_return_list = []
+
     for i in range(batch_size):
         mask = masks[i]
         valid_indices = mask.nonzero().squeeze()
-        
-        if valid_indices.numel() < k:
+
+        if valid_indices.numel() < max_top_k:
             continue
-            
+
         valid_pred = y_pred[i][valid_indices]
-        valid_true = y_true[i][valid_indices] # This is the 5-day return
-        
-        # 1. Predicted Top 5
-        _, pred_indices = torch.topk(valid_pred, k)
-        pred_top_returns = valid_true[pred_indices]
-        pred_return_sum = pred_top_returns.sum().item()
-        
-        # 2. True Top 5 (Theoretical Max)
-        _, true_indices = torch.topk(valid_true, k)
-        true_top_returns = valid_true[true_indices]
-        max_return_sum = true_top_returns.sum().item()
-        
-        # 3. Random 5 (Expected Value)
-        # Expected sum = 5 * mean(all valid returns)
-        random_return_sum = k * valid_true.mean().item()
-        
-        # 计算每个样本的比例与稳定化 final_score
-        ratio_pred = pred_return_sum / (max_return_sum + 1e-12) if abs(max_return_sum) > 1e-9 else 0.0
-        ratio_random = random_return_sum / (max_return_sum + 1e-12) if abs(max_return_sum) > 1e-9 else 0.0
-        denominator = max_return_sum - random_return_sum
-        final_score = (pred_return_sum - random_return_sum) / (denominator + 1e-12) if abs(denominator) > 1e-6 else 0.0
-        
-        pred_return_sum_list.append(pred_return_sum)
-        max_return_sum_list.append(max_return_sum)
-        random_return_sum_list.append(random_return_sum)
-        ratio_pred_list.append(ratio_pred)
-        ratio_random_list.append(ratio_random)
-        final_score_list.append(final_score)
-        
-    metrics = {
-        'portfolio_return': np.mean(pred_return_sum_list) / k if pred_return_sum_list else 0.0,
-        'pred_return_sum': np.mean(pred_return_sum_list) if pred_return_sum_list else 0.0,
-        'max_return_sum': np.mean(max_return_sum_list) if max_return_sum_list else 0.0,
-        'random_return_sum': np.mean(random_return_sum_list) if random_return_sum_list else 0.0,
-    }
-    
-    # 比值用逐样本均值，降低极端日影响
-    metrics['ratio_pred'] = np.mean(ratio_pred_list) if ratio_pred_list else 0.0
-    metrics['ratio_random'] = np.mean(ratio_random_list) if ratio_random_list else 0.0
-    metrics['final_score'] = np.mean(final_score_list) if final_score_list else 0.0
-    
+        valid_true_return = y_true[i][valid_indices]
+
+        for candidate in strategy_candidates:
+            metric_name = f'return_{candidate["name"]}'
+            pred_indices, weights = build_portfolio_weights(
+                valid_pred,
+                top_k=candidate['top_k'],
+                weighting=candidate['weighting'],
+                temperature=temperature,
+            )
+            pred_top_returns = valid_true_return[pred_indices]
+            portfolio_return = torch.sum(pred_top_returns * weights).item()
+            metrics_lists[metric_name].append(portfolio_return)
+
+        _, true_indices = torch.topk(valid_true_return, 5)
+        true_top_returns = valid_true_return[true_indices]
+        oracle_return_list.append(true_top_returns.mean().item())
+
+    metrics = {name: (np.mean(values) if values else 0.0) for name, values in metrics_lists.items()}
+    metrics['oracle_top5_equal'] = np.mean(oracle_return_list) if oracle_return_list else 0.0
+
     return metrics
+
+
+def choose_best_strategy(eval_metrics, strategy_candidates):
+    selection_metric = config.get('selection_metric', 'auto')
+
+    if selection_metric != 'auto':
+        metric_value = eval_metrics.get(selection_metric, float('-inf'))
+        for candidate in strategy_candidates:
+            if f'return_{candidate["name"]}' == selection_metric:
+                return candidate, metric_value
+        raise ValueError(f'未找到 selection_metric 对应的策略: {selection_metric}')
+
+    best_candidate = None
+    best_score = -float('inf')
+
+    for candidate in strategy_candidates:
+        metric_name = f'return_{candidate["name"]}'
+        metric_value = eval_metrics.get(metric_name, -float('inf'))
+        if metric_value > best_score:
+            best_score = metric_value
+            best_candidate = candidate
+
+    if best_candidate is None:
+        raise ValueError('验证指标为空，无法选择最优持仓策略')
+
+    return best_candidate, best_score
+
+
+def format_strategy_metric_summary(metrics, strategy_candidates):
+    """将候选持仓策略收益整理成便于打印的一行文本。"""
+    parts = []
+    for candidate in strategy_candidates:
+        metric_name = f'return_{candidate["name"]}'
+        if metric_name in metrics:
+            parts.append(f'{candidate["name"]}={metrics[metric_name]:.4f}')
+    return ', '.join(parts)
+
+
+def format_factor_summary(feature_pipeline):
+    summary = feature_pipeline['summary']
+    group_parts = [
+        f'{group}={count}'
+        for group, count in sorted(summary['group_counts'].items())
+    ]
+    return (
+        f"feature_set={feature_pipeline['feature_set']}, "
+        f"active={summary['active_total']}, "
+        f"builtin={summary['builtin_enabled']}/{summary['builtin_total']}, "
+        f"builtin_overridden={summary.get('builtin_overridden', 0)}, "
+        f"custom={summary['custom_enabled']}/{summary['custom_total']}, "
+        f"groups=({', '.join(group_parts)})"
+    )
+
+
+def print_active_factors(feature_pipeline):
+    grouped_specs = {}
+    for spec in feature_pipeline['active_specs']:
+        group = spec.get('group', 'unknown')
+        label = spec['name']
+        if spec.get('source') == 'custom':
+            label = f'{label} [custom]'
+        elif spec.get('overridden'):
+            label = f'{label} [override]'
+        grouped_specs.setdefault(group, []).append(label)
+
+    print("当前启用因子明细:")
+    for group, factor_names in sorted(grouped_specs.items()):
+        print(f"  - {group} ({len(factor_names)}):")
+        print("    " + ", ".join(factor_names))
+
+
+def _build_factor_markdown(feature_pipeline):
+    summary = feature_pipeline['summary']
+    lines = [
+        f"- feature_set: `{feature_pipeline['feature_set']}`",
+        f"- factor_store: `{feature_pipeline['store_path']}`",
+        f"- builtin_registry: `{feature_pipeline.get('builtin_registry_path', '')}`",
+        f"- active_total: `{summary['active_total']}`",
+        f"- builtin_enabled: `{summary['builtin_enabled']}/{summary['builtin_total']}`",
+        f"- builtin_overridden: `{summary.get('builtin_overridden', 0)}`",
+        f"- custom_enabled: `{summary['custom_enabled']}/{summary['custom_total']}`",
+        f"- groups: `{json.dumps(summary['group_counts'], ensure_ascii=False)}`",
+        "",
+        "Active factors:",
+        ", ".join(feature_pipeline['active_features']),
+    ]
+    if feature_pipeline['custom_specs']:
+        lines.extend([
+            "",
+            "Custom factors:",
+            json.dumps(feature_pipeline['custom_specs'], ensure_ascii=False, indent=2),
+        ])
+    return "\n".join(lines)
+
+
+def log_factor_dashboard(writer, feature_pipeline, raw_hist_frame, scaled_hist_frame):
+    if writer is None:
+        return
+
+    summary = feature_pipeline['summary']
+    writer.add_text('factors/overview', _build_factor_markdown(feature_pipeline), global_step=0)
+    writer.add_scalar('factors/active_total', summary['active_total'], global_step=0)
+    writer.add_scalar('factors/builtin_enabled', summary['builtin_enabled'], global_step=0)
+    writer.add_scalar('factors/builtin_overridden', summary.get('builtin_overridden', 0), global_step=0)
+    writer.add_scalar('factors/custom_enabled', summary['custom_enabled'], global_step=0)
+
+    for group, count in sorted(summary['group_counts'].items()):
+        writer.add_scalar(f'factors/group_count/{group}', count, global_step=0)
+
+    max_histograms = max(0, int(config.get('factor_histogram_max_features', 0)))
+    if raw_hist_frame is None or scaled_hist_frame is None:
+        return
+
+    for feature_name in raw_hist_frame.columns[:max_histograms]:
+        raw_values = raw_hist_frame[feature_name].to_numpy(dtype=np.float32, copy=True)
+        scaled_values = scaled_hist_frame[feature_name].to_numpy(dtype=np.float32, copy=True)
+        writer.add_histogram(f'factors/raw/{feature_name}', raw_values, global_step=0)
+        writer.add_histogram(f'factors/scaled/{feature_name}', scaled_values, global_step=0)
 
 class RankingDataset(torch.utils.data.Dataset):
     """排序数据集类"""
@@ -261,6 +360,47 @@ class RankingDataset(torch.utils.data.Dataset):
             'targets': torch.FloatTensor(np.array(self.targets[idx])),      # [num_stocks] 真实涨跌幅
             'relevance': torch.LongTensor(np.array(self.relevance_scores[idx])),  # [num_stocks] 排序标签
             'stock_indices': torch.LongTensor(np.array(self.stock_indices[idx]))  # [num_stocks] 股票索引
+        }
+
+
+class LazyRankingDataset(torch.utils.data.Dataset):
+    """懒加载排序数据集，避免一次性将全部窗口序列展开到内存。"""
+    def __init__(self, stock_cache, day_entries, sequence_length):
+        self.stock_cache = stock_cache
+        self.day_entries = day_entries
+        self.sequence_length = sequence_length
+    
+    def __len__(self):
+        return len(self.day_entries)
+    
+    def __getitem__(self, idx):
+        entry = self.day_entries[idx]
+        day_sequences = []
+        day_targets = []
+        day_stock_indices = []
+
+        for stock_idx, end_idx in entry['entries']:
+            stock_data = self.stock_cache[stock_idx]
+            if end_idx >= len(stock_data['labels']):
+                raise IndexError(
+                    f"懒加载索引越界: date={entry['date']}, stock_idx={stock_idx}, "
+                    f"end_idx={end_idx}, labels_len={len(stock_data['labels'])}"
+                )
+            seq = stock_data['features'][end_idx - self.sequence_length + 1:end_idx + 1]
+            target = stock_data['labels'][end_idx]
+            day_sequences.append(seq)
+            day_targets.append(target)
+            day_stock_indices.append(stock_idx)
+
+        day_targets = np.asarray(day_targets, dtype=np.float32)
+        threshold_2pct = np.quantile(day_targets, 0.98)
+        relevance = (day_targets >= threshold_2pct).astype(np.float32)
+
+        return {
+            'sequences': torch.FloatTensor(np.asarray(day_sequences, dtype=np.float32)),
+            'targets': torch.FloatTensor(day_targets),
+            'relevance': torch.LongTensor(relevance.astype(np.int64)),
+            'stock_indices': torch.LongTensor(np.asarray(day_stock_indices, dtype=np.int64)),
         }
 
 def collate_fn(batch):
@@ -316,8 +456,67 @@ def collate_fn(batch):
         'masks': torch.stack(masks)                      # [batch, max_stocks]
     }
 
+
+def build_lazy_ranking_index(data, features, sequence_length, min_window_end_date=None, max_window_end_date=None):
+    """构建懒加载训练索引，仅保存按股票缓存和按日期索引，不保存完整窗口内容。"""
+    print("正在创建排序数据集索引（懒加载版本）...")
+    indexed = data.copy()
+    indexed = indexed.rename(columns={'日期': 'datetime'})
+    indexed['datetime'] = pd.to_datetime(indexed['datetime'])
+    indexed = indexed.sort_values(['instrument', 'datetime']).reset_index(drop=True)
+    indexed = indexed.dropna(subset=['label'])
+
+    if min_window_end_date is not None:
+        min_window_end_date = pd.to_datetime(min_window_end_date)
+    if max_window_end_date is not None:
+        max_window_end_date = pd.to_datetime(max_window_end_date)
+
+    stock_cache = {}
+    date_to_entries = {}
+
+    grouped = indexed.groupby('instrument', sort=False)
+    for stock_idx, group in tqdm(grouped, desc="Indexing stocks"):
+        group = group.reset_index(drop=True)
+        if len(group) < sequence_length:
+            continue
+
+        feature_values = group[features].to_numpy(dtype=np.float32, copy=True)
+        labels = group['label'].to_numpy(dtype=np.float32, copy=True)
+        dates = pd.to_datetime(group['datetime']).to_numpy()
+
+        stock_idx = int(stock_idx)
+        stock_cache[stock_idx] = {
+            'features': feature_values,
+            'labels': labels,
+        }
+
+        for end_idx in range(sequence_length - 1, len(group)):
+            end_date = pd.Timestamp(dates[end_idx]).normalize()
+            if min_window_end_date is not None and end_date < min_window_end_date:
+                continue
+            if max_window_end_date is not None and end_date > max_window_end_date:
+                continue
+            date_to_entries.setdefault(end_date, []).append((stock_idx, int(end_idx)))
+
+    day_entries = []
+    for date in sorted(date_to_entries):
+        entries = date_to_entries[date]
+        if len(entries) < 10:
+            continue
+        day_entries.append({
+            'date': date,
+            'entries': entries,
+        })
+
+    print(f"成功创建 {len(day_entries)} 个训练索引样本")
+    if day_entries:
+        avg_stocks = np.mean([len(entry['entries']) for entry in day_entries])
+        print(f"每个训练样本平均包含 {avg_stocks:.1f} 只股票")
+
+    return stock_cache, day_entries
+
 # 排序训练函数
-def train_ranking_model(model, dataloader, criterion, optimizer, device, epoch, writer):
+def train_ranking_model(model, dataloader, criterion, optimizer, device, epoch, writer, strategy_candidates):
     model.train()
     total_loss = 0
     total_metrics = {}
@@ -353,13 +552,14 @@ def train_ranking_model(model, dataloader, criterion, optimizer, device, epoch, 
             if valid_indices.dim() == 0:
                 valid_indices = valid_indices.unsqueeze(0)
             
-            # 获取有效股票的预测值和预处理好的相关性得分
+            # 获取有效股票的预测值和真实收益率
             valid_pred = masked_outputs[i][valid_indices]
-            valid_relevance = masked_relevance[i][valid_indices]
+            # [重要] 这里我们改为直接向模型强制灌输真实的未来收益率（masked_targets）
+            valid_target = masked_targets[i][valid_indices]
             
             if len(valid_pred) > 1:
-                # 直接使用预处理好的相关性得分，无需重新计算
-                loss = criterion(valid_pred.unsqueeze(0), valid_relevance.unsqueeze(0))
+                # 使用 PortfolioOptimizationLoss 直接对实际收益率进行平滑优化
+                loss = criterion(valid_pred.unsqueeze(0), valid_target.unsqueeze(0))
                 batch_loss = batch_loss + loss if isinstance(batch_loss, torch.Tensor) else loss
         
         if batch_loss is not None:
@@ -375,7 +575,13 @@ def train_ranking_model(model, dataloader, criterion, optimizer, device, epoch, 
             
             # 计算评估指标
             with torch.no_grad():
-                metrics = calculate_ranking_metrics(masked_outputs, masked_targets, masks, k=5)
+                metrics = calculate_ranking_metrics(
+                    masked_outputs,
+                    masked_targets,
+                    masks,
+                    strategy_candidates=strategy_candidates,
+                    temperature=config.get('softmax_temperature', 1.0),
+                )
                 for k, v in metrics.items():
                     if k not in total_metrics:
                         total_metrics[k] = 0
@@ -394,7 +600,16 @@ def train_ranking_model(model, dataloader, criterion, optimizer, device, epoch, 
     
     return total_loss / len(dataloader) if len(dataloader) > 0 else 0, total_metrics
 
-def evaluate_ranking_model(model, dataloader, criterion, device, writer, epoch):
+def evaluate_ranking_model(
+    model,
+    dataloader,
+    criterion,
+    device,
+    writer,
+    epoch,
+    strategy_candidates,
+    ablation_feature_indices=None,
+):
     model.eval()
     total_loss = 0
     total_metrics = {}
@@ -405,6 +620,10 @@ def evaluate_ranking_model(model, dataloader, criterion, device, writer, epoch):
             sequences = batch['sequences'].to(device)
             targets = batch['targets'].to(device)
             masks = batch['masks'].to(device)
+
+            if ablation_feature_indices:
+                sequences = sequences.clone()
+                sequences[:, :, :, ablation_feature_indices] = 0
             
             # 模型预测
             outputs = model(sequences)
@@ -431,12 +650,8 @@ def evaluate_ranking_model(model, dataloader, criterion, device, writer, epoch):
                 valid_true = masked_targets[i][valid_indices]
                 
                 if len(valid_pred) > 1:
-                    _, sorted_indices = torch.sort(valid_true, descending=True)
-                    relevance_scores = torch.zeros_like(valid_true, requires_grad=False)
-                    relevance_scores[sorted_indices] = torch.arange(len(valid_true), 0, -1, device=device, dtype=torch.float32)
-                    relevance_scores = relevance_scores.detach()
-                    
-                    loss = criterion(valid_pred.unsqueeze(0), relevance_scores.unsqueeze(0))
+                    # 使用实际收益率进行 loss 验证
+                    loss = criterion(valid_pred.unsqueeze(0), valid_true.unsqueeze(0))
                     batch_loss = batch_loss + loss if batch_loss is not None else loss
             
             if batch_loss is not None:
@@ -444,7 +659,13 @@ def evaluate_ranking_model(model, dataloader, criterion, device, writer, epoch):
                 total_loss += batch_loss.item()
             
             # 计算评估指标
-            metrics = calculate_ranking_metrics(masked_outputs, masked_targets, masks, k=5)
+            metrics = calculate_ranking_metrics(
+                masked_outputs,
+                masked_targets,
+                masks,
+                strategy_candidates=strategy_candidates,
+                temperature=config.get('softmax_temperature', 1.0),
+            )
             for k, v in metrics.items():
                 if k not in total_metrics:
                     total_metrics[k] = 0
@@ -463,6 +684,127 @@ def evaluate_ranking_model(model, dataloader, criterion, device, writer, epoch):
             writer.add_scalar(f'eval/{k}', v, global_step=epoch)
     
     return avg_loss, total_metrics
+
+
+def evaluate_ranking_folds(
+    model,
+    fold_loaders,
+    criterion,
+    device,
+    writer,
+    epoch,
+    strategy_candidates,
+    ablation_feature_indices=None,
+):
+    """在多个滚动验证折上评估，并返回折均值指标。"""
+    fold_results = []
+    total_loss = 0.0
+    total_metrics = {}
+
+    for fold in fold_loaders:
+        fold_loss, fold_metrics = evaluate_ranking_model(
+            model,
+            fold['loader'],
+            criterion,
+            device,
+            writer=None,
+            epoch=epoch,
+            strategy_candidates=strategy_candidates,
+            ablation_feature_indices=ablation_feature_indices,
+        )
+
+        fold_result = {
+            'name': fold['name'],
+            'start_date': fold['start_date'],
+            'end_date': fold['end_date'],
+            'num_samples': fold['num_samples'],
+            'loss': fold_loss,
+            'metrics': fold_metrics,
+        }
+        fold_results.append(fold_result)
+
+        total_loss += fold_loss
+        for key, value in fold_metrics.items():
+            total_metrics[key] = total_metrics.get(key, 0.0) + value
+
+    num_folds = len(fold_results)
+    avg_loss = total_loss / num_folds if num_folds > 0 else 0.0
+    avg_metrics = {
+        key: value / num_folds
+        for key, value in total_metrics.items()
+    } if num_folds > 0 else {}
+
+    if writer:
+        writer.add_scalar('eval/loss', avg_loss, global_step=epoch)
+        for key, value in avg_metrics.items():
+            writer.add_scalar(f'eval/{key}', value, global_step=epoch)
+
+        for fold_result in fold_results:
+            fold_prefix = f"eval_{fold_result['name']}"
+            writer.add_scalar(f'{fold_prefix}/loss', fold_result['loss'], global_step=epoch)
+            for key, value in fold_result['metrics'].items():
+                writer.add_scalar(f'{fold_prefix}/{key}', value, global_step=epoch)
+
+    return avg_loss, avg_metrics, fold_results
+
+
+def build_factor_group_indices(feature_pipeline):
+    group_indices = {}
+    for feature_idx, spec in enumerate(feature_pipeline['active_specs']):
+        group = spec.get('group', 'unknown')
+        group_indices.setdefault(group, []).append(feature_idx)
+    return group_indices
+
+
+def evaluate_factor_group_ablation(
+    model,
+    fold_loaders,
+    criterion,
+    device,
+    epoch,
+    strategy_candidates,
+    feature_pipeline,
+    baseline_candidate,
+):
+    group_indices = build_factor_group_indices(feature_pipeline)
+    ablation_results = []
+    baseline_metric_name = f'return_{baseline_candidate["name"]}'
+
+    for group_name, feature_indices in sorted(group_indices.items()):
+        ablation_loss, ablation_metrics, _ = evaluate_ranking_folds(
+            model,
+            fold_loaders,
+            criterion,
+            device,
+            writer=None,
+            epoch=epoch,
+            strategy_candidates=strategy_candidates,
+            ablation_feature_indices=feature_indices,
+        )
+
+        ablated_return = ablation_metrics.get(baseline_metric_name, 0.0)
+        ablation_results.append({
+            'group': group_name,
+            'num_features': len(feature_indices),
+            'loss': ablation_loss,
+            'return': ablated_return,
+            'metrics': ablation_metrics,
+        })
+
+    return ablation_results
+
+
+def log_factor_ablation(writer, epoch, baseline_return, ablation_results):
+    if writer is None:
+        return
+
+    writer.add_scalar('factors/ablation/baseline_return', baseline_return, global_step=epoch)
+    for result in ablation_results:
+        group = result['group']
+        delta = result['return'] - baseline_return
+        writer.add_scalar(f'factors/ablation/{group}/return', result['return'], global_step=epoch)
+        writer.add_scalar(f'factors/ablation/{group}/delta', delta, global_step=epoch)
+        writer.add_scalar(f'factors/ablation/{group}/num_features', result['num_features'], global_step=epoch)
 
 
 def predict_top_stocks(model, data, features, sequence_length, scaler, stockid2idx, device, top_k=5):
@@ -558,6 +900,125 @@ def split_train_val_by_last_month(df, sequence_length):
 
     return train_df, val_df, val_start
 
+
+def build_rolling_validation_folds(df, sequence_length):
+    """构建滚动验证折，并保证所有验证折都不被训练集未来数据污染。"""
+    df = df.copy()
+    df['日期'] = pd.to_datetime(df['日期'])
+    df = df.sort_values(['日期', '股票代码']).reset_index(drop=True)
+
+    unique_dates = [pd.Timestamp(d).normalize() for d in sorted(df['日期'].unique())]
+    label_ready_dates = unique_dates[:-5]
+
+    num_folds = int(config.get('rolling_val_num_folds', 4))
+    window_size = int(config.get('rolling_val_window_size', 20))
+    step_size = int(config.get('rolling_val_step_size', window_size))
+
+    if num_folds <= 0:
+        raise ValueError("rolling_val_num_folds 必须大于 0")
+    if window_size <= 0 or step_size <= 0:
+        raise ValueError("rolling_val_window_size 和 rolling_val_step_size 必须大于 0")
+
+    required_dates = window_size + (num_folds - 1) * step_size
+    if len(label_ready_dates) < required_dates:
+        raise ValueError(
+            f"可用于滚动验证的交易日不足: 需要至少 {required_dates} 天，当前仅有 {len(label_ready_dates)} 天"
+        )
+
+    reverse_bounds = []
+    last_end_idx = len(label_ready_dates) - 1
+    for offset in range(num_folds):
+        end_idx = last_end_idx - offset * step_size
+        start_idx = end_idx - window_size + 1
+        if start_idx < 0:
+            raise ValueError("滚动验证窗口越界，请减小折数或窗口大小")
+        reverse_bounds.append((start_idx, end_idx))
+
+    reverse_bounds.reverse()
+    folds = []
+    for fold_idx, (start_idx, end_idx) in enumerate(reverse_bounds, start=1):
+        start_date = label_ready_dates[start_idx]
+        end_date = label_ready_dates[end_idx]
+        folds.append({
+            'name': f'fold_{fold_idx}',
+            'start_date': start_date,
+            'end_date': end_date,
+        })
+
+    earliest_start = folds[0]['start_date']
+    earliest_start_idx = unique_dates.index(earliest_start)
+    if earliest_start_idx <= 0:
+        raise ValueError("滚动验证起点过早，没有可用于训练的历史数据")
+
+    context_start_idx = max(0, earliest_start_idx - (sequence_length - 1))
+    val_context_start = unique_dates[context_start_idx]
+
+    train_df = df[df['日期'] < earliest_start].copy()
+    val_df = df[df['日期'] >= val_context_start].copy()
+
+    print(f"全量数据范围: {df['日期'].min().date()} 到 {df['日期'].max().date()}")
+    print(f"训练集范围: {train_df['日期'].min().date()} 到 {train_df['日期'].max().date()}")
+    print(f"滚动验证实际取数范围(含序列上下文): {val_df['日期'].min().date()} 到 {val_df['日期'].max().date()}")
+    print(
+        "滚动验证参数: "
+        f"folds={num_folds}, window_size={window_size}, step_size={step_size}"
+    )
+    print("滚动验证折:")
+    for fold in folds:
+        print(f"  - {fold['name']}: {fold['start_date'].date()} 到 {fold['end_date'].date()}")
+
+    train_df['日期'] = train_df['日期'].dt.strftime('%Y-%m-%d')
+    val_df['日期'] = val_df['日期'].dt.strftime('%Y-%m-%d')
+    return train_df, val_df, folds
+
+
+def build_validation_fold_loaders(val_data, features, val_folds):
+    """为每个滚动验证折构建独立的数据集与 DataLoader。"""
+    fold_loaders = []
+    total_samples = 0
+
+    for fold in val_folds:
+        sequences, targets, relevance, stock_indices = create_ranking_dataset_vectorized(
+            val_data,
+            features,
+            config['sequence_length'],
+            ranking_data_path=None,
+            min_window_end_date=fold['start_date'].strftime('%Y-%m-%d'),
+            max_window_end_date=fold['end_date'].strftime('%Y-%m-%d'),
+        )
+
+        if len(sequences) == 0:
+            raise ValueError(
+                f"{fold['name']} ({fold['start_date'].date()} ~ {fold['end_date'].date()}) 未生成任何验证样本"
+            )
+
+        dataset = RankingDataset(sequences, targets, relevance, stock_indices)
+        loader = DataLoader(
+            dataset,
+            batch_size=config['batch_size'],
+            shuffle=False,
+            collate_fn=collate_fn,
+            num_workers=0,
+            pin_memory=False,
+        )
+
+        fold_loaders.append({
+            'name': fold['name'],
+            'start_date': fold['start_date'],
+            'end_date': fold['end_date'],
+            'num_samples': len(sequences),
+            'loader': loader,
+        })
+        total_samples += len(sequences)
+
+        print(
+            f"验证折 {fold['name']} 样本数: {len(sequences)} "
+            f"({fold['start_date'].date()} ~ {fold['end_date'].date()})"
+        )
+
+    print(f"滚动验证总样本数: {total_samples}")
+    return fold_loaders
+
 # 主程序
 def main():
     set_seed(config.get('seed', 42))
@@ -575,11 +1036,36 @@ def main():
         device = torch.device('mps')
     else:
         device = torch.device('cpu')
+
+    if device.type == 'cuda':
+        device_msg = f"当前训练设备: cuda ({torch.cuda.get_device_name(device)})"
+    elif device.type == 'mps':
+        device_msg = "当前训练设备: mps (Apple Silicon)"
+    else:
+        device_msg = "当前训练设备: cpu"
+    print(device_msg)
     
     # 1. 数据加载
     data_file = os.path.join(data_path, 'train.csv')
     full_df = pd.read_csv(data_file)
-    train_df, val_df, val_start = split_train_val_by_last_month(full_df, config['sequence_length'])
+    factor_pipeline = resolve_factor_pipeline(
+        config['feature_num'],
+        config['factor_store_path'],
+        config['builtin_factor_registry_path'],
+    )
+    save_factor_snapshot(factor_pipeline, os.path.join(output_dir, 'active_factors.json'))
+    print("当前因子配置:", format_factor_summary(factor_pipeline))
+    print_active_factors(factor_pipeline)
+    validation_mode = config.get('validation_mode', 'rolling')
+    if validation_mode == 'rolling':
+        train_df, val_df, val_folds = build_rolling_validation_folds(full_df, config['sequence_length'])
+    else:
+        train_df, val_df, val_start = split_train_val_by_last_month(full_df, config['sequence_length'])
+        val_folds = [{
+            'name': 'holdout',
+            'start_date': pd.Timestamp(val_start).normalize(),
+            'end_date': pd.to_datetime(val_df['日期']).max().normalize(),
+        }]
     
     # 获取所有股票ID，建立映射
     all_stock_ids = full_df['股票代码'].unique()
@@ -587,8 +1073,8 @@ def main():
     num_stocks = len(stockid2idx)
     
     # 2. 特征工程与预处理
-    train_data, features = preprocess_data(train_df, is_train=True, stockid2idx=stockid2idx)
-    val_data, _ = preprocess_val_data(val_df, stockid2idx=stockid2idx)
+    train_data, features = preprocess_data(train_df, factor_pipeline, is_train=True, stockid2idx=stockid2idx)
+    val_data, _ = preprocess_val_data(val_df, factor_pipeline, stockid2idx=stockid2idx)
     
     # 3. 标准化
     scaler = StandardScaler()
@@ -599,32 +1085,28 @@ def main():
     train_data = train_data.dropna(subset=features)
     val_data = val_data.dropna(subset=features)
     # 然后再缩放
-    train_data[features] = scaler.fit_transform(train_data[features])
-    val_data[features] = scaler.transform(val_data[features])
+    histogram_features = features[:max(0, int(config.get('factor_histogram_max_features', 0)))]
+    raw_train_hist_frame = train_data[histogram_features].copy() if histogram_features else None
+    train_data[features] = scaler.fit_transform(train_data[features]).astype(np.float32)
+    val_data[features] = scaler.transform(val_data[features]).astype(np.float32)
     joblib.dump(scaler, os.path.join(output_dir, 'scaler.pkl'))
+    scaled_train_hist_frame = train_data[histogram_features] if histogram_features else None
+    log_factor_dashboard(writer, factor_pipeline, raw_train_hist_frame, scaled_train_hist_frame)
 
     
     # 4. 创建排序数据集
-    train_sequences, train_targets, train_relevance, train_stock_indices = create_ranking_dataset_vectorized(
+    train_stock_cache, train_day_entries = build_lazy_ranking_index(
         train_data,
         features,
         config['sequence_length'],
-        ranking_data_path=config.get('train_ranking_data_path')
     )
-    val_sequences, val_targets, val_relevance, val_stock_indices = create_ranking_dataset_vectorized(
-        val_data,
-        features,
-        config['sequence_length'],
-        ranking_data_path=config.get('val_ranking_data_path'),
-        min_window_end_date=val_start.strftime('%Y-%m-%d')
-    )
-
-    print(f"训练集样本数: {len(train_sequences)}")
-    print(f"验证集样本数: {len(val_sequences)}")
+    print(f"训练集样本数: {len(train_day_entries)}")
+    val_fold_loaders = build_validation_fold_loaders(val_data, features, val_folds)
     
     # 5. 创建排序数据集和数据加载器
-    train_dataset = RankingDataset(train_sequences, train_targets, train_relevance, train_stock_indices)
-    val_dataset = RankingDataset(val_sequences, val_targets, val_relevance, val_stock_indices)
+    train_dataset = LazyRankingDataset(train_stock_cache, train_day_entries, config['sequence_length'])
+    del train_data
+    del val_data
     
     train_loader = DataLoader(
         train_dataset, 
@@ -635,30 +1117,16 @@ def main():
         pin_memory=False
     )
     
-    val_loader = DataLoader(
-        val_dataset, 
-        batch_size=config['batch_size'], 
-        shuffle=False, 
-        collate_fn=collate_fn,
-        num_workers=0,
-        pin_memory=False
-    )
-    
     # 6. 模型初始化
     model = StockTransformer(input_dim=len(features), config=config, num_stocks=num_stocks)
     model.to(device)
     print(f"模型参数量: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
+
+    strategy_candidates = build_strategy_candidates()
+    print("候选持仓策略:", ", ".join(candidate['name'] for candidate in strategy_candidates))
     
     # 7. 损失函数和优化器
-    criterion = WeightedRankingLoss(
-        k=5,
-        temperature=1.0,
-        weight_factor=config['top5_weight'],
-        pairwise_weight=config['pairwise_weight'],
-        base_weight=config.get('base_weight', 1.0),
-        tail_multiplier=config.get('tail_multiplier', 10.0),
-        tail_percentile=config.get('tail_percentile', 0.95)
-    )  # 使用加权排序损失
+    criterion = PortfolioOptimizationLoss(temperature=10.0, pairwise_weight=config.get('pairwise_weight', 1.0))
     optimizer = torch.optim.AdamW(model.parameters(), lr=config['learning_rate'], weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.2, total_iters=config['num_epochs'])
     
@@ -672,7 +1140,7 @@ def main():
             
             # 训练
             train_loss, train_metrics = train_ranking_model(
-                model, train_loader, criterion, optimizer, device, epoch, writer
+                model, train_loader, criterion, optimizer, device, epoch, writer, strategy_candidates
             )
             
             print(f"Train Loss: {train_loss:.4f}")
@@ -680,13 +1148,32 @@ def main():
                 print(f"Train {k}: {v:.4f}")
             
             # 验证
-            eval_loss, eval_metrics = evaluate_ranking_model(
-                model, val_loader, criterion, device, writer, epoch
+            eval_loss, eval_metrics, fold_results = evaluate_ranking_folds(
+                model, val_fold_loaders, criterion, device, writer, epoch, strategy_candidates
             )
             
             print(f"Eval Loss: {eval_loss:.4f}")
             for k, v in eval_metrics.items():
                 print(f"Eval {k}: {v:.4f}")
+            print(
+                "Eval 策略收益汇总: "
+                + format_strategy_metric_summary(eval_metrics, strategy_candidates)
+            )
+            for fold_result in fold_results:
+                fold_best_candidate, fold_best_score = choose_best_strategy(
+                    fold_result['metrics'], strategy_candidates
+                )
+                print(
+                    f"Eval {fold_result['name']} "
+                    f"({fold_result['start_date'].date()} ~ {fold_result['end_date'].date()}) "
+                    f"样本数: {fold_result['num_samples']} | "
+                    f"Loss: {fold_result['loss']:.4f} | "
+                    f"best={fold_best_candidate['name']}:{fold_best_score:.4f}"
+                )
+                print(
+                    "  策略收益: "
+                    + format_strategy_metric_summary(fold_result['metrics'], strategy_candidates)
+                )
             
             # 学习率调度
             scheduler.step()
@@ -694,16 +1181,57 @@ def main():
                 writer.add_scalar('train/learning_rate', scheduler.get_last_lr()[0], global_step=epoch)
             
 
-            # 保存最佳模型（基于 portfolio_return）
-            current_final_score = eval_metrics.get('portfolio_return', 0.0)
+            best_candidate, current_final_score = choose_best_strategy(eval_metrics, strategy_candidates)
+            print(f"当前最优持仓策略: {best_candidate['name']} | 验证收益: {current_final_score:.4f}")
+
+            if config.get('factor_ablation_enabled', True):
+                ablation_results = evaluate_factor_group_ablation(
+                    model,
+                    val_fold_loaders,
+                    criterion,
+                    device,
+                    epoch,
+                    strategy_candidates,
+                    factor_pipeline,
+                    best_candidate,
+                )
+                log_factor_ablation(writer, epoch, current_final_score, ablation_results)
+                print("因子分组消融:")
+                for result in ablation_results:
+                    delta = result['return'] - current_final_score
+                    print(
+                        f"  - {result['group']}: "
+                        f"features={result['num_features']}, "
+                        f"return={result['return']:.4f}, "
+                        f"delta={delta:.4f}"
+                    )
+
             if current_final_score > best_score:
                 best_score = current_final_score
                 best_epoch = epoch + 1
                 torch.save(model.state_dict(), os.path.join(output_dir, 'best_model.pth'))
+                with open(os.path.join(output_dir, 'best_strategy.json'), 'w') as f:
+                    json.dump({
+                        'name': best_candidate['name'],
+                        'top_k': best_candidate['top_k'],
+                        'weighting': best_candidate['weighting'],
+                        'temperature': config.get('softmax_temperature', 1.0),
+                        'validation_return': current_final_score,
+                        'validation_mode': validation_mode,
+                        'validation_folds': [
+                            {
+                                'name': fold['name'],
+                                'start_date': fold['start_date'].strftime('%Y-%m-%d'),
+                                'end_date': fold['end_date'].strftime('%Y-%m-%d'),
+                            }
+                            for fold in val_folds
+                        ],
+                        'best_epoch': best_epoch,
+                    }, f, indent=4, ensure_ascii=False)
                 print(f"保存最佳模型 - final score: {best_score:.4f}")
         print(f"\n训练完成！最佳 epoch: {best_epoch}, 最佳 final score: {best_score:.4f}")
         with open(os.path.join(output_dir, 'final_score.txt'), 'w') as f:
-            f.write(f"Best epoch: {best_epoch}\\nBest final_score: {best_score:.6f}\\n")
+            f.write(f"Best epoch: {best_epoch}\nBest final_score: {best_score:.6f}\n")
 
         if writer:
             writer.close()

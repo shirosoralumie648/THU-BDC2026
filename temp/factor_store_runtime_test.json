@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "feature_sets": {
+    "39": {
+      "disabled_builtin_factors": [],
+      "custom_factors": []
+    },
+    "158+39": {
+      "disabled_builtin_factors": [],
+      "custom_factors": [
+        {
+          "name": "gap_open_prev_close",
+          "expression": "(开盘 / (shift(收盘, 1) + 1e-12)) - 1",
+          "group": "custom",
+          "description": "runtime smoke test",
+          "enabled": true
+        }
+      ]
+    }
+  }
+}

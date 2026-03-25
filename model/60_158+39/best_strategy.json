@@ -1,0 +1,8 @@
+{
+    "name": "equal_top1",
+    "top_k": 1,
+    "weighting": "equal",
+    "temperature": 1.0,
+    "validation_return": 0.09632611216511577,
+    "best_epoch": 18
+}

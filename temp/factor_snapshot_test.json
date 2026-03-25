@@ -1,0 +1,1414 @@
+{
+  "feature_set": "158+39",
+  "store_path": "./temp/factor_store_test.json",
+  "summary": {
+    "builtin_total": 199,
+    "builtin_enabled": 199,
+    "custom_total": 0,
+    "custom_enabled": 0,
+    "active_total": 199,
+    "group_counts": {
+      "base_price": 10,
+      "alpha158": 158,
+      "tech39": 31
+    }
+  },
+  "active_features": [
+    "开盘",
+    "收盘",
+    "最高",
+    "最低",
+    "成交量",
+    "成交额",
+    "振幅",
+    "涨跌额",
+    "换手率",
+    "涨跌幅",
+    "KMID",
+    "KLEN",
+    "KMID2",
+    "KUP",
+    "KUP2",
+    "KLOW",
+    "KLOW2",
+    "KSFT",
+    "KSFT2",
+    "OPEN0",
+    "HIGH0",
+    "LOW0",
+    "VWAP0",
+    "ROC5",
+    "ROC10",
+    "ROC20",
+    "ROC30",
+    "ROC60",
+    "MA5",
+    "MA10",
+    "MA20",
+    "MA30",
+    "MA60",
+    "STD5",
+    "STD10",
+    "STD20",
+    "STD30",
+    "STD60",
+    "BETA5",
+    "BETA10",
+    "BETA20",
+    "BETA30",
+    "BETA60",
+    "RSQR5",
+    "RSQR10",
+    "RSQR20",
+    "RSQR30",
+    "RSQR60",
+    "RESI5",
+    "RESI10",
+    "RESI20",
+    "RESI30",
+    "RESI60",
+    "MAX5",
+    "MAX10",
+    "MAX20",
+    "MAX30",
+    "MAX60",
+    "MIN5",
+    "MIN10",
+    "MIN20",
+    "MIN30",
+    "MIN60",
+    "QTLU5",
+    "QTLU10",
+    "QTLU20",
+    "QTLU30",
+    "QTLU60",
+    "QTLD5",
+    "QTLD10",
+    "QTLD20",
+    "QTLD30",
+    "QTLD60",
+    "RANK5",
+    "RANK10",
+    "RANK20",
+    "RANK30",
+    "RANK60",
+    "RSV5",
+    "RSV10",
+    "RSV20",
+    "RSV30",
+    "RSV60",
+    "IMAX5",
+    "IMAX10",
+    "IMAX20",
+    "IMAX30",
+    "IMAX60",
+    "IMIN5",
+    "IMIN10",
+    "IMIN20",
+    "IMIN30",
+    "IMIN60",
+    "IMXD5",
+    "IMXD10",
+    "IMXD20",
+    "IMXD30",
+    "IMXD60",
+    "CORR5",
+    "CORR10",
+    "CORR20",
+    "CORR30",
+    "CORR60",
+    "CORD5",
+    "CORD10",
+    "CORD20",
+    "CORD30",
+    "CORD60",
+    "CNTP5",
+    "CNTP10",
+    "CNTP20",
+    "CNTP30",
+    "CNTP60",
+    "CNTN5",
+    "CNTN10",
+    "CNTN20",
+    "CNTN30",
+    "CNTN60",
+    "CNTD5",
+    "CNTD10",
+    "CNTD20",
+    "CNTD30",
+    "CNTD60",
+    "SUMP5",
+    "SUMP10",
+    "SUMP20",
+    "SUMP30",
+    "SUMP60",
+    "SUMN5",
+    "SUMN10",
+    "SUMN20",
+    "SUMN30",
+    "SUMN60",
+    "SUMD5",
+    "SUMD10",
+    "SUMD20",
+    "SUMD30",
+    "SUMD60",
+    "VMA5",
+    "VMA10",
+    "VMA20",
+    "VMA30",
+    "VMA60",
+    "VSTD5",
+    "VSTD10",
+    "VSTD20",
+    "VSTD30",
+    "VSTD60",
+    "WVMA5",
+    "WVMA10",
+    "WVMA20",
+    "WVMA30",
+    "WVMA60",
+    "VSUMP5",
+    "VSUMP10",
+    "VSUMP20",
+    "VSUMP30",
+    "VSUMP60",
+    "VSUMN5",
+    "VSUMN10",
+    "VSUMN20",
+    "VSUMN30",
+    "VSUMN60",
+    "VSUMD5",
+    "VSUMD10",
+    "VSUMD20",
+    "VSUMD30",
+    "VSUMD60",
+    "sma_5",
+    "sma_20",
+    "ema_12",
+    "ema_26",
+    "rsi",
+    "macd",
+    "macd_signal",
+    "volume_change",
+    "obv",
+    "volume_ma_5",
+    "volume_ma_20",
+    "volume_ratio",
+    "kdj_k",
+    "kdj_d",
+    "kdj_j",
+    "boll_mid",
+    "boll_std",
+    "atr_14",
+    "ema_60",
+    "volatility_10",
+    "volatility_20",
+    "return_1",
+    "return_5",
+    "return_10",
+    "high_low_spread",
+    "open_close_spread",
+    "high_close_spread",
+    "low_close_spread",
+    "mom_acc",
+    "pv_div",
+    "consecutive_pos"
+  ],
+  "builtin_specs": [
+    {
+      "name": "开盘",
+      "group": "base_price",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "收盘",
+      "group": "base_price",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "最高",
+      "group": "base_price",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "最低",
+      "group": "base_price",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "成交量",
+      "group": "base_price",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "成交额",
+      "group": "base_price",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "振幅",
+      "group": "base_price",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "涨跌额",
+      "group": "base_price",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "换手率",
+      "group": "base_price",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "涨跌幅",
+      "group": "base_price",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "KMID",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "KLEN",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "KMID2",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "KUP",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "KUP2",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "KLOW",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "KLOW2",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "KSFT",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "KSFT2",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "OPEN0",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "HIGH0",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "LOW0",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VWAP0",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "ROC5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "ROC10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "ROC20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "ROC30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "ROC60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "MA5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "MA10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "MA20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "MA30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "MA60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "STD5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "STD10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "STD20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "STD30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "STD60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "BETA5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "BETA10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "BETA20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "BETA30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "BETA60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "RSQR5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "RSQR10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "RSQR20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "RSQR30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "RSQR60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "RESI5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "RESI10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "RESI20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "RESI30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "RESI60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "MAX5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "MAX10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "MAX20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "MAX30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "MAX60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "MIN5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "MIN10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "MIN20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "MIN30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "MIN60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "QTLU5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "QTLU10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "QTLU20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "QTLU30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "QTLU60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "QTLD5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "QTLD10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "QTLD20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "QTLD30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "QTLD60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "RANK5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "RANK10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "RANK20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "RANK30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "RANK60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "RSV5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "RSV10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "RSV20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "RSV30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "RSV60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "IMAX5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "IMAX10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "IMAX20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "IMAX30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "IMAX60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "IMIN5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "IMIN10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "IMIN20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "IMIN30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "IMIN60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "IMXD5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "IMXD10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "IMXD20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "IMXD30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "IMXD60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CORR5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CORR10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CORR20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CORR30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CORR60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CORD5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CORD10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CORD20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CORD30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CORD60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CNTP5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CNTP10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CNTP20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CNTP30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CNTP60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CNTN5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CNTN10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CNTN20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CNTN30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CNTN60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CNTD5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CNTD10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CNTD20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CNTD30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "CNTD60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "SUMP5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "SUMP10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "SUMP20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "SUMP30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "SUMP60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "SUMN5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "SUMN10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "SUMN20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "SUMN30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "SUMN60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "SUMD5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "SUMD10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "SUMD20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "SUMD30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "SUMD60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VMA5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VMA10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VMA20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VMA30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VMA60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VSTD5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VSTD10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VSTD20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VSTD30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VSTD60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "WVMA5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "WVMA10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "WVMA20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "WVMA30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "WVMA60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VSUMP5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VSUMP10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VSUMP20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VSUMP30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VSUMP60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VSUMN5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VSUMN10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VSUMN20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VSUMN30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VSUMN60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VSUMD5",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VSUMD10",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VSUMD20",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VSUMD30",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "VSUMD60",
+      "group": "alpha158",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "sma_5",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "sma_20",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "ema_12",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "ema_26",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "rsi",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "macd",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "macd_signal",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "volume_change",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "obv",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "volume_ma_5",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "volume_ma_20",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "volume_ratio",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "kdj_k",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "kdj_d",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "kdj_j",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "boll_mid",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "boll_std",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "atr_14",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "ema_60",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "volatility_10",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "volatility_20",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "return_1",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "return_5",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "return_10",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "high_low_spread",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "open_close_spread",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "high_close_spread",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "low_close_spread",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "mom_acc",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "pv_div",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    },
+    {
+      "name": "consecutive_pos",
+      "group": "tech39",
+      "source": "builtin",
+      "enabled": true
+    }
+  ],
+  "custom_specs": []
+}

@@ -1,0 +1,1689 @@
+{
+  "version": 1,
+  "feature_sets": {
+    "39": [
+      {
+        "name": "开盘",
+        "group": "base_price",
+        "source": "builtin",
+        "expression": "开盘",
+        "description": "原始开盘价"
+      },
+      {
+        "name": "收盘",
+        "group": "base_price",
+        "source": "builtin",
+        "expression": "收盘",
+        "description": "原始收盘价"
+      },
+      {
+        "name": "最高",
+        "group": "base_price",
+        "source": "builtin",
+        "expression": "最高",
+        "description": "原始最高价"
+      },
+      {
+        "name": "最低",
+        "group": "base_price",
+        "source": "builtin",
+        "expression": "最低",
+        "description": "原始最低价"
+      },
+      {
+        "name": "成交量",
+        "group": "base_price",
+        "source": "builtin",
+        "expression": "成交量",
+        "description": "原始成交量"
+      },
+      {
+        "name": "成交额",
+        "group": "base_price",
+        "source": "builtin",
+        "expression": "成交额",
+        "description": "原始成交额"
+      },
+      {
+        "name": "振幅",
+        "group": "base_price",
+        "source": "builtin",
+        "expression": "振幅",
+        "description": "原始振幅"
+      },
+      {
+        "name": "涨跌额",
+        "group": "base_price",
+        "source": "builtin",
+        "expression": "涨跌额",
+        "description": "原始涨跌额"
+      },
+      {
+        "name": "换手率",
+        "group": "base_price",
+        "source": "builtin",
+        "expression": "换手率",
+        "description": "原始换手率"
+      },
+      {
+        "name": "涨跌幅",
+        "group": "base_price",
+        "source": "builtin",
+        "expression": "涨跌幅",
+        "description": "原始涨跌幅"
+      },
+      {
+        "name": "sma_5",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "sma(收盘, 5)",
+        "description": "5日简单均线"
+      },
+      {
+        "name": "sma_20",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "sma(收盘, 20)",
+        "description": "20日简单均线"
+      },
+      {
+        "name": "ema_12",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "ema(收盘, 12)",
+        "description": "12日指数均线"
+      },
+      {
+        "name": "ema_26",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "ema(收盘, 26)",
+        "description": "26日指数均线"
+      },
+      {
+        "name": "rsi",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "rsi(收盘, 14)",
+        "description": "14日RSI"
+      },
+      {
+        "name": "macd",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "macd_line(收盘, 12, 26, 9)",
+        "description": "MACD主线"
+      },
+      {
+        "name": "macd_signal",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "macd_signal(收盘, 12, 26, 9)",
+        "description": "MACD信号线"
+      },
+      {
+        "name": "volume_change",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "pct_change(成交量, 1)",
+        "description": "成交量环比变化"
+      },
+      {
+        "name": "obv",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "obv(收盘, 成交量)",
+        "description": "OBV能量潮"
+      },
+      {
+        "name": "volume_ma_5",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "sma(成交量, 5)",
+        "description": "5日均量"
+      },
+      {
+        "name": "volume_ma_20",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "sma(成交量, 20)",
+        "description": "20日均量"
+      },
+      {
+        "name": "volume_ratio",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "sma(成交量, 5) / (sma(成交量, 20) + 1e-12)",
+        "description": "短长均量比"
+      },
+      {
+        "name": "kdj_k",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "kdj_k(最高, 最低, 收盘, 9, 3, 3)",
+        "description": "KDJ-K值"
+      },
+      {
+        "name": "kdj_d",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "kdj_d(最高, 最低, 收盘, 9, 3, 3)",
+        "description": "KDJ-D值"
+      },
+      {
+        "name": "kdj_j",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "3 * kdj_k(最高, 最低, 收盘, 9, 3, 3) - 2 * kdj_d(最高, 最低, 收盘, 9, 3, 3)",
+        "description": "KDJ-J值"
+      },
+      {
+        "name": "boll_mid",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "boll_mid(收盘, 20, 2)",
+        "description": "布林中轨"
+      },
+      {
+        "name": "boll_std",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "boll_std(收盘, 20, 2)",
+        "description": "布林标准差"
+      },
+      {
+        "name": "atr_14",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "atr(最高, 最低, 收盘, 14)",
+        "description": "14日ATR"
+      },
+      {
+        "name": "ema_60",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "ema(收盘, 60)",
+        "description": "60日指数均线"
+      },
+      {
+        "name": "volatility_10",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "rolling_std(pct_change(收盘, 1), 10)",
+        "description": "10日收益波动率"
+      },
+      {
+        "name": "volatility_20",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "rolling_std(pct_change(收盘, 1), 20)",
+        "description": "20日收益波动率"
+      },
+      {
+        "name": "return_1",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "pct_change(收盘, 1)",
+        "description": "1日收益率"
+      },
+      {
+        "name": "return_5",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "pct_change(收盘, 5)",
+        "description": "5日收益率"
+      },
+      {
+        "name": "return_10",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "pct_change(收盘, 10)",
+        "description": "10日收益率"
+      },
+      {
+        "name": "high_low_spread",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "最高 - 最低",
+        "description": "高低价差"
+      },
+      {
+        "name": "open_close_spread",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "开盘 - 收盘",
+        "description": "开收价差"
+      },
+      {
+        "name": "high_close_spread",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "最高 - 收盘",
+        "description": "高收价差"
+      },
+      {
+        "name": "low_close_spread",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "最低 - 收盘",
+        "description": "低收价差"
+      },
+      {
+        "name": "mom_acc",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "pct_change(收盘, 3) - pct_change(收盘, 10)",
+        "description": "动量加速度"
+      },
+      {
+        "name": "pv_div",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "(最高 - 开盘) / (成交量 + 1e-12)",
+        "description": "量价背离因子"
+      },
+      {
+        "name": "consecutive_pos",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "rolling_sum((收盘 > 开盘).astype(float), 5)",
+        "description": "5日阳线天数"
+      }
+    ],
+    "158+39": [
+      {
+        "name": "开盘",
+        "group": "base_price",
+        "source": "builtin",
+        "expression": "开盘",
+        "description": "原始开盘价"
+      },
+      {
+        "name": "收盘",
+        "group": "base_price",
+        "source": "builtin",
+        "expression": "收盘",
+        "description": "原始收盘价"
+      },
+      {
+        "name": "最高",
+        "group": "base_price",
+        "source": "builtin",
+        "expression": "最高",
+        "description": "原始最高价"
+      },
+      {
+        "name": "最低",
+        "group": "base_price",
+        "source": "builtin",
+        "expression": "最低",
+        "description": "原始最低价"
+      },
+      {
+        "name": "成交量",
+        "group": "base_price",
+        "source": "builtin",
+        "expression": "成交量",
+        "description": "原始成交量"
+      },
+      {
+        "name": "成交额",
+        "group": "base_price",
+        "source": "builtin",
+        "expression": "成交额",
+        "description": "原始成交额"
+      },
+      {
+        "name": "振幅",
+        "group": "base_price",
+        "source": "builtin",
+        "expression": "振幅",
+        "description": "原始振幅"
+      },
+      {
+        "name": "涨跌额",
+        "group": "base_price",
+        "source": "builtin",
+        "expression": "涨跌额",
+        "description": "原始涨跌额"
+      },
+      {
+        "name": "换手率",
+        "group": "base_price",
+        "source": "builtin",
+        "expression": "换手率",
+        "description": "原始换手率"
+      },
+      {
+        "name": "涨跌幅",
+        "group": "base_price",
+        "source": "builtin",
+        "expression": "涨跌幅",
+        "description": "原始涨跌幅"
+      },
+      {
+        "name": "KMID",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "(收盘 - 开盘) / (开盘 + 1e-12)",
+        "description": "实体相对开盘比"
+      },
+      {
+        "name": "KLEN",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "(最高 - 最低) / (开盘 + 1e-12)",
+        "description": "振幅相对开盘比"
+      },
+      {
+        "name": "KMID2",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "(收盘 - 开盘) / (最高 - 最低 + 1e-12)",
+        "description": "实体占振幅比例"
+      },
+      {
+        "name": "KUP",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "(最高 - row_max(开盘, 收盘)) / (开盘 + 1e-12)",
+        "description": "上影线相对开盘比"
+      },
+      {
+        "name": "KUP2",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "(最高 - row_max(开盘, 收盘)) / (最高 - 最低 + 1e-12)",
+        "description": "上影线占振幅比例"
+      },
+      {
+        "name": "KLOW",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "(row_min(开盘, 收盘) - 最低) / (开盘 + 1e-12)",
+        "description": "下影线相对开盘比"
+      },
+      {
+        "name": "KLOW2",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "(row_min(开盘, 收盘) - 最低) / (最高 - 最低 + 1e-12)",
+        "description": "下影线占振幅比例"
+      },
+      {
+        "name": "KSFT",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "(2 * 收盘 - 最高 - 最低) / (开盘 + 1e-12)",
+        "description": "收盘偏移相对开盘比"
+      },
+      {
+        "name": "KSFT2",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "(2 * 收盘 - 最高 - 最低) / (最高 - 最低 + 1e-12)",
+        "description": "收盘偏移占振幅比例"
+      },
+      {
+        "name": "OPEN0",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "开盘 / (收盘 + 1e-12)",
+        "description": "开盘相对收盘比"
+      },
+      {
+        "name": "HIGH0",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "最高 / (收盘 + 1e-12)",
+        "description": "最高相对收盘比"
+      },
+      {
+        "name": "LOW0",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "最低 / (收盘 + 1e-12)",
+        "description": "最低相对收盘比"
+      },
+      {
+        "name": "VWAP0",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "vwap(成交额, 成交量) / (收盘 + 1e-12)",
+        "description": "VWAP相对收盘比"
+      },
+      {
+        "name": "ROC5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "shift(收盘, 5) / (收盘 + 1e-12)",
+        "description": "5日价格相对比"
+      },
+      {
+        "name": "MA5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "sma(收盘, 5) / (收盘 + 1e-12)",
+        "description": "5日均价相对收盘比"
+      },
+      {
+        "name": "STD5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_std(收盘, 5) / (收盘 + 1e-12)",
+        "description": "5日价格波动率相对收盘比"
+      },
+      {
+        "name": "BETA5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "linearreg_slope(收盘, 5) / (收盘 + 1e-12)",
+        "description": "5日线性回归斜率相对收盘比"
+      },
+      {
+        "name": "RSQR5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "linearreg_rsquare(收盘, 5)",
+        "description": "5日线性回归R方"
+      },
+      {
+        "name": "RESI5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "linearreg_residual(收盘, 5) / (收盘 + 1e-12)",
+        "description": "5日线性回归残差相对收盘比"
+      },
+      {
+        "name": "MAX5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_max(最高, 5) / (收盘 + 1e-12)",
+        "description": "5日最高价相对收盘比"
+      },
+      {
+        "name": "MIN5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_min(最低, 5) / (收盘 + 1e-12)",
+        "description": "5日最低价相对收盘比"
+      },
+      {
+        "name": "QTLU5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_quantile(收盘, 5, 0.8) / (收盘 + 1e-12)",
+        "description": "5日0.8分位价相对收盘比"
+      },
+      {
+        "name": "QTLD5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_quantile(收盘, 5, 0.2) / (收盘 + 1e-12)",
+        "description": "5日0.2分位价相对收盘比"
+      },
+      {
+        "name": "RANK5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rank_pct(收盘, 5)",
+        "description": "5日收盘价分位排名"
+      },
+      {
+        "name": "RSV5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "(收盘 - rolling_min(最低, 5)) / (rolling_max(最高, 5) - rolling_min(最低, 5) + 1e-12)",
+        "description": "5日随机指标原始值"
+      },
+      {
+        "name": "IMAX5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "argmax_ratio(最高, 5)",
+        "description": "5日最高价位置比例"
+      },
+      {
+        "name": "IMIN5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "argmin_ratio(最低, 5)",
+        "description": "5日最低价位置比例"
+      },
+      {
+        "name": "IMXD5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "argmax_minus_argmin_ratio(最高, 最低, 5)",
+        "description": "5日最高最低位置差比例"
+      },
+      {
+        "name": "CORR5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_corr(收盘, log(成交量 + 1), 5)",
+        "description": "5日价格与对数量相关系数"
+      },
+      {
+        "name": "CORD5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_corr(收盘 / (shift(收盘, 1) + 1e-12), log(成交量 / (shift(成交量, 1) + 1e-12) + 1), 5)",
+        "description": "5日价格变化与量变化相关系数"
+      },
+      {
+        "name": "CNTP5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "direction_up_rate(收盘, 5)",
+        "description": "5日上涨天数占比"
+      },
+      {
+        "name": "CNTN5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "direction_down_rate(收盘, 5)",
+        "description": "5日下跌天数占比"
+      },
+      {
+        "name": "CNTD5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "direction_balance_rate(收盘, 5)",
+        "description": "5日涨跌天数差占比"
+      },
+      {
+        "name": "SUMP5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_up_ratio(收盘, 5)",
+        "description": "5日上涨振幅占比"
+      },
+      {
+        "name": "SUMN5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_down_ratio(收盘, 5)",
+        "description": "5日下跌振幅占比"
+      },
+      {
+        "name": "SUMD5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_balance_ratio(收盘, 5)",
+        "description": "5日涨跌振幅平衡比"
+      },
+      {
+        "name": "VMA5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "sma(成交量, 5) / (成交量 + 1e-12)",
+        "description": "5日均量相对当前量"
+      },
+      {
+        "name": "VSTD5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_std(成交量, 5) / (成交量 + 1e-12)",
+        "description": "5日量波动相对当前量"
+      },
+      {
+        "name": "WVMA5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "vol_weighted_volatility(收盘, 成交量, 5)",
+        "description": "5日量加权收益波动"
+      },
+      {
+        "name": "VSUMP5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_up_ratio(成交量, 5)",
+        "description": "5日放量幅度占比"
+      },
+      {
+        "name": "VSUMN5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_down_ratio(成交量, 5)",
+        "description": "5日缩量幅度占比"
+      },
+      {
+        "name": "VSUMD5",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_balance_ratio(成交量, 5)",
+        "description": "5日量变化平衡比"
+      },
+      {
+        "name": "ROC10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "shift(收盘, 10) / (收盘 + 1e-12)",
+        "description": "10日价格相对比"
+      },
+      {
+        "name": "MA10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "sma(收盘, 10) / (收盘 + 1e-12)",
+        "description": "10日均价相对收盘比"
+      },
+      {
+        "name": "STD10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_std(收盘, 10) / (收盘 + 1e-12)",
+        "description": "10日价格波动率相对收盘比"
+      },
+      {
+        "name": "BETA10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "linearreg_slope(收盘, 10) / (收盘 + 1e-12)",
+        "description": "10日线性回归斜率相对收盘比"
+      },
+      {
+        "name": "RSQR10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "linearreg_rsquare(收盘, 10)",
+        "description": "10日线性回归R方"
+      },
+      {
+        "name": "RESI10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "linearreg_residual(收盘, 10) / (收盘 + 1e-12)",
+        "description": "10日线性回归残差相对收盘比"
+      },
+      {
+        "name": "MAX10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_max(最高, 10) / (收盘 + 1e-12)",
+        "description": "10日最高价相对收盘比"
+      },
+      {
+        "name": "MIN10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_min(最低, 10) / (收盘 + 1e-12)",
+        "description": "10日最低价相对收盘比"
+      },
+      {
+        "name": "QTLU10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_quantile(收盘, 10, 0.8) / (收盘 + 1e-12)",
+        "description": "10日0.8分位价相对收盘比"
+      },
+      {
+        "name": "QTLD10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_quantile(收盘, 10, 0.2) / (收盘 + 1e-12)",
+        "description": "10日0.2分位价相对收盘比"
+      },
+      {
+        "name": "RANK10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rank_pct(收盘, 10)",
+        "description": "10日收盘价分位排名"
+      },
+      {
+        "name": "RSV10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "(收盘 - rolling_min(最低, 10)) / (rolling_max(最高, 10) - rolling_min(最低, 10) + 1e-12)",
+        "description": "10日随机指标原始值"
+      },
+      {
+        "name": "IMAX10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "argmax_ratio(最高, 10)",
+        "description": "10日最高价位置比例"
+      },
+      {
+        "name": "IMIN10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "argmin_ratio(最低, 10)",
+        "description": "10日最低价位置比例"
+      },
+      {
+        "name": "IMXD10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "argmax_minus_argmin_ratio(最高, 最低, 10)",
+        "description": "10日最高最低位置差比例"
+      },
+      {
+        "name": "CORR10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_corr(收盘, log(成交量 + 1), 10)",
+        "description": "10日价格与对数量相关系数"
+      },
+      {
+        "name": "CORD10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_corr(收盘 / (shift(收盘, 1) + 1e-12), log(成交量 / (shift(成交量, 1) + 1e-12) + 1), 10)",
+        "description": "10日价格变化与量变化相关系数"
+      },
+      {
+        "name": "CNTP10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "direction_up_rate(收盘, 10)",
+        "description": "10日上涨天数占比"
+      },
+      {
+        "name": "CNTN10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "direction_down_rate(收盘, 10)",
+        "description": "10日下跌天数占比"
+      },
+      {
+        "name": "CNTD10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "direction_balance_rate(收盘, 10)",
+        "description": "10日涨跌天数差占比"
+      },
+      {
+        "name": "SUMP10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_up_ratio(收盘, 10)",
+        "description": "10日上涨振幅占比"
+      },
+      {
+        "name": "SUMN10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_down_ratio(收盘, 10)",
+        "description": "10日下跌振幅占比"
+      },
+      {
+        "name": "SUMD10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_balance_ratio(收盘, 10)",
+        "description": "10日涨跌振幅平衡比"
+      },
+      {
+        "name": "VMA10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "sma(成交量, 10) / (成交量 + 1e-12)",
+        "description": "10日均量相对当前量"
+      },
+      {
+        "name": "VSTD10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_std(成交量, 10) / (成交量 + 1e-12)",
+        "description": "10日量波动相对当前量"
+      },
+      {
+        "name": "WVMA10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "vol_weighted_volatility(收盘, 成交量, 10)",
+        "description": "10日量加权收益波动"
+      },
+      {
+        "name": "VSUMP10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_up_ratio(成交量, 10)",
+        "description": "10日放量幅度占比"
+      },
+      {
+        "name": "VSUMN10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_down_ratio(成交量, 10)",
+        "description": "10日缩量幅度占比"
+      },
+      {
+        "name": "VSUMD10",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_balance_ratio(成交量, 10)",
+        "description": "10日量变化平衡比"
+      },
+      {
+        "name": "ROC20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "shift(收盘, 20) / (收盘 + 1e-12)",
+        "description": "20日价格相对比"
+      },
+      {
+        "name": "MA20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "sma(收盘, 20) / (收盘 + 1e-12)",
+        "description": "20日均价相对收盘比"
+      },
+      {
+        "name": "STD20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_std(收盘, 20) / (收盘 + 1e-12)",
+        "description": "20日价格波动率相对收盘比"
+      },
+      {
+        "name": "BETA20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "linearreg_slope(收盘, 20) / (收盘 + 1e-12)",
+        "description": "20日线性回归斜率相对收盘比"
+      },
+      {
+        "name": "RSQR20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "linearreg_rsquare(收盘, 20)",
+        "description": "20日线性回归R方"
+      },
+      {
+        "name": "RESI20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "linearreg_residual(收盘, 20) / (收盘 + 1e-12)",
+        "description": "20日线性回归残差相对收盘比"
+      },
+      {
+        "name": "MAX20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_max(最高, 20) / (收盘 + 1e-12)",
+        "description": "20日最高价相对收盘比"
+      },
+      {
+        "name": "MIN20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_min(最低, 20) / (收盘 + 1e-12)",
+        "description": "20日最低价相对收盘比"
+      },
+      {
+        "name": "QTLU20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_quantile(收盘, 20, 0.8) / (收盘 + 1e-12)",
+        "description": "20日0.8分位价相对收盘比"
+      },
+      {
+        "name": "QTLD20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_quantile(收盘, 20, 0.2) / (收盘 + 1e-12)",
+        "description": "20日0.2分位价相对收盘比"
+      },
+      {
+        "name": "RANK20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rank_pct(收盘, 20)",
+        "description": "20日收盘价分位排名"
+      },
+      {
+        "name": "RSV20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "(收盘 - rolling_min(最低, 20)) / (rolling_max(最高, 20) - rolling_min(最低, 20) + 1e-12)",
+        "description": "20日随机指标原始值"
+      },
+      {
+        "name": "IMAX20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "argmax_ratio(最高, 20)",
+        "description": "20日最高价位置比例"
+      },
+      {
+        "name": "IMIN20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "argmin_ratio(最低, 20)",
+        "description": "20日最低价位置比例"
+      },
+      {
+        "name": "IMXD20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "argmax_minus_argmin_ratio(最高, 最低, 20)",
+        "description": "20日最高最低位置差比例"
+      },
+      {
+        "name": "CORR20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_corr(收盘, log(成交量 + 1), 20)",
+        "description": "20日价格与对数量相关系数"
+      },
+      {
+        "name": "CORD20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_corr(收盘 / (shift(收盘, 1) + 1e-12), log(成交量 / (shift(成交量, 1) + 1e-12) + 1), 20)",
+        "description": "20日价格变化与量变化相关系数"
+      },
+      {
+        "name": "CNTP20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "direction_up_rate(收盘, 20)",
+        "description": "20日上涨天数占比"
+      },
+      {
+        "name": "CNTN20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "direction_down_rate(收盘, 20)",
+        "description": "20日下跌天数占比"
+      },
+      {
+        "name": "CNTD20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "direction_balance_rate(收盘, 20)",
+        "description": "20日涨跌天数差占比"
+      },
+      {
+        "name": "SUMP20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_up_ratio(收盘, 20)",
+        "description": "20日上涨振幅占比"
+      },
+      {
+        "name": "SUMN20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_down_ratio(收盘, 20)",
+        "description": "20日下跌振幅占比"
+      },
+      {
+        "name": "SUMD20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_balance_ratio(收盘, 20)",
+        "description": "20日涨跌振幅平衡比"
+      },
+      {
+        "name": "VMA20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "sma(成交量, 20) / (成交量 + 1e-12)",
+        "description": "20日均量相对当前量"
+      },
+      {
+        "name": "VSTD20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_std(成交量, 20) / (成交量 + 1e-12)",
+        "description": "20日量波动相对当前量"
+      },
+      {
+        "name": "WVMA20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "vol_weighted_volatility(收盘, 成交量, 20)",
+        "description": "20日量加权收益波动"
+      },
+      {
+        "name": "VSUMP20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_up_ratio(成交量, 20)",
+        "description": "20日放量幅度占比"
+      },
+      {
+        "name": "VSUMN20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_down_ratio(成交量, 20)",
+        "description": "20日缩量幅度占比"
+      },
+      {
+        "name": "VSUMD20",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_balance_ratio(成交量, 20)",
+        "description": "20日量变化平衡比"
+      },
+      {
+        "name": "ROC30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "shift(收盘, 30) / (收盘 + 1e-12)",
+        "description": "30日价格相对比"
+      },
+      {
+        "name": "MA30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "sma(收盘, 30) / (收盘 + 1e-12)",
+        "description": "30日均价相对收盘比"
+      },
+      {
+        "name": "STD30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_std(收盘, 30) / (收盘 + 1e-12)",
+        "description": "30日价格波动率相对收盘比"
+      },
+      {
+        "name": "BETA30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "linearreg_slope(收盘, 30) / (收盘 + 1e-12)",
+        "description": "30日线性回归斜率相对收盘比"
+      },
+      {
+        "name": "RSQR30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "linearreg_rsquare(收盘, 30)",
+        "description": "30日线性回归R方"
+      },
+      {
+        "name": "RESI30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "linearreg_residual(收盘, 30) / (收盘 + 1e-12)",
+        "description": "30日线性回归残差相对收盘比"
+      },
+      {
+        "name": "MAX30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_max(最高, 30) / (收盘 + 1e-12)",
+        "description": "30日最高价相对收盘比"
+      },
+      {
+        "name": "MIN30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_min(最低, 30) / (收盘 + 1e-12)",
+        "description": "30日最低价相对收盘比"
+      },
+      {
+        "name": "QTLU30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_quantile(收盘, 30, 0.8) / (收盘 + 1e-12)",
+        "description": "30日0.8分位价相对收盘比"
+      },
+      {
+        "name": "QTLD30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_quantile(收盘, 30, 0.2) / (收盘 + 1e-12)",
+        "description": "30日0.2分位价相对收盘比"
+      },
+      {
+        "name": "RANK30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rank_pct(收盘, 30)",
+        "description": "30日收盘价分位排名"
+      },
+      {
+        "name": "RSV30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "(收盘 - rolling_min(最低, 30)) / (rolling_max(最高, 30) - rolling_min(最低, 30) + 1e-12)",
+        "description": "30日随机指标原始值"
+      },
+      {
+        "name": "IMAX30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "argmax_ratio(最高, 30)",
+        "description": "30日最高价位置比例"
+      },
+      {
+        "name": "IMIN30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "argmin_ratio(最低, 30)",
+        "description": "30日最低价位置比例"
+      },
+      {
+        "name": "IMXD30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "argmax_minus_argmin_ratio(最高, 最低, 30)",
+        "description": "30日最高最低位置差比例"
+      },
+      {
+        "name": "CORR30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_corr(收盘, log(成交量 + 1), 30)",
+        "description": "30日价格与对数量相关系数"
+      },
+      {
+        "name": "CORD30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_corr(收盘 / (shift(收盘, 1) + 1e-12), log(成交量 / (shift(成交量, 1) + 1e-12) + 1), 30)",
+        "description": "30日价格变化与量变化相关系数"
+      },
+      {
+        "name": "CNTP30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "direction_up_rate(收盘, 30)",
+        "description": "30日上涨天数占比"
+      },
+      {
+        "name": "CNTN30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "direction_down_rate(收盘, 30)",
+        "description": "30日下跌天数占比"
+      },
+      {
+        "name": "CNTD30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "direction_balance_rate(收盘, 30)",
+        "description": "30日涨跌天数差占比"
+      },
+      {
+        "name": "SUMP30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_up_ratio(收盘, 30)",
+        "description": "30日上涨振幅占比"
+      },
+      {
+        "name": "SUMN30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_down_ratio(收盘, 30)",
+        "description": "30日下跌振幅占比"
+      },
+      {
+        "name": "SUMD30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_balance_ratio(收盘, 30)",
+        "description": "30日涨跌振幅平衡比"
+      },
+      {
+        "name": "VMA30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "sma(成交量, 30) / (成交量 + 1e-12)",
+        "description": "30日均量相对当前量"
+      },
+      {
+        "name": "VSTD30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_std(成交量, 30) / (成交量 + 1e-12)",
+        "description": "30日量波动相对当前量"
+      },
+      {
+        "name": "WVMA30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "vol_weighted_volatility(收盘, 成交量, 30)",
+        "description": "30日量加权收益波动"
+      },
+      {
+        "name": "VSUMP30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_up_ratio(成交量, 30)",
+        "description": "30日放量幅度占比"
+      },
+      {
+        "name": "VSUMN30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_down_ratio(成交量, 30)",
+        "description": "30日缩量幅度占比"
+      },
+      {
+        "name": "VSUMD30",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_balance_ratio(成交量, 30)",
+        "description": "30日量变化平衡比"
+      },
+      {
+        "name": "ROC60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "shift(收盘, 60) / (收盘 + 1e-12)",
+        "description": "60日价格相对比"
+      },
+      {
+        "name": "MA60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "sma(收盘, 60) / (收盘 + 1e-12)",
+        "description": "60日均价相对收盘比"
+      },
+      {
+        "name": "STD60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_std(收盘, 60) / (收盘 + 1e-12)",
+        "description": "60日价格波动率相对收盘比"
+      },
+      {
+        "name": "BETA60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "linearreg_slope(收盘, 60) / (收盘 + 1e-12)",
+        "description": "60日线性回归斜率相对收盘比"
+      },
+      {
+        "name": "RSQR60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "linearreg_rsquare(收盘, 60)",
+        "description": "60日线性回归R方"
+      },
+      {
+        "name": "RESI60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "linearreg_residual(收盘, 60) / (收盘 + 1e-12)",
+        "description": "60日线性回归残差相对收盘比"
+      },
+      {
+        "name": "MAX60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_max(最高, 60) / (收盘 + 1e-12)",
+        "description": "60日最高价相对收盘比"
+      },
+      {
+        "name": "MIN60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_min(最低, 60) / (收盘 + 1e-12)",
+        "description": "60日最低价相对收盘比"
+      },
+      {
+        "name": "QTLU60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_quantile(收盘, 60, 0.8) / (收盘 + 1e-12)",
+        "description": "60日0.8分位价相对收盘比"
+      },
+      {
+        "name": "QTLD60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_quantile(收盘, 60, 0.2) / (收盘 + 1e-12)",
+        "description": "60日0.2分位价相对收盘比"
+      },
+      {
+        "name": "RANK60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rank_pct(收盘, 60)",
+        "description": "60日收盘价分位排名"
+      },
+      {
+        "name": "RSV60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "(收盘 - rolling_min(最低, 60)) / (rolling_max(最高, 60) - rolling_min(最低, 60) + 1e-12)",
+        "description": "60日随机指标原始值"
+      },
+      {
+        "name": "IMAX60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "argmax_ratio(最高, 60)",
+        "description": "60日最高价位置比例"
+      },
+      {
+        "name": "IMIN60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "argmin_ratio(最低, 60)",
+        "description": "60日最低价位置比例"
+      },
+      {
+        "name": "IMXD60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "argmax_minus_argmin_ratio(最高, 最低, 60)",
+        "description": "60日最高最低位置差比例"
+      },
+      {
+        "name": "CORR60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_corr(收盘, log(成交量 + 1), 60)",
+        "description": "60日价格与对数量相关系数"
+      },
+      {
+        "name": "CORD60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_corr(收盘 / (shift(收盘, 1) + 1e-12), log(成交量 / (shift(成交量, 1) + 1e-12) + 1), 60)",
+        "description": "60日价格变化与量变化相关系数"
+      },
+      {
+        "name": "CNTP60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "direction_up_rate(收盘, 60)",
+        "description": "60日上涨天数占比"
+      },
+      {
+        "name": "CNTN60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "direction_down_rate(收盘, 60)",
+        "description": "60日下跌天数占比"
+      },
+      {
+        "name": "CNTD60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "direction_balance_rate(收盘, 60)",
+        "description": "60日涨跌天数差占比"
+      },
+      {
+        "name": "SUMP60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_up_ratio(收盘, 60)",
+        "description": "60日上涨振幅占比"
+      },
+      {
+        "name": "SUMN60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_down_ratio(收盘, 60)",
+        "description": "60日下跌振幅占比"
+      },
+      {
+        "name": "SUMD60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_balance_ratio(收盘, 60)",
+        "description": "60日涨跌振幅平衡比"
+      },
+      {
+        "name": "VMA60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "sma(成交量, 60) / (成交量 + 1e-12)",
+        "description": "60日均量相对当前量"
+      },
+      {
+        "name": "VSTD60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "rolling_std(成交量, 60) / (成交量 + 1e-12)",
+        "description": "60日量波动相对当前量"
+      },
+      {
+        "name": "WVMA60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "vol_weighted_volatility(收盘, 成交量, 60)",
+        "description": "60日量加权收益波动"
+      },
+      {
+        "name": "VSUMP60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_up_ratio(成交量, 60)",
+        "description": "60日放量幅度占比"
+      },
+      {
+        "name": "VSUMN60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_down_ratio(成交量, 60)",
+        "description": "60日缩量幅度占比"
+      },
+      {
+        "name": "VSUMD60",
+        "group": "alpha158",
+        "source": "builtin",
+        "expression": "diff_balance_ratio(成交量, 60)",
+        "description": "60日量变化平衡比"
+      },
+      {
+        "name": "sma_5",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "sma(收盘, 5)",
+        "description": "5日简单均线"
+      },
+      {
+        "name": "sma_20",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "sma(收盘, 20)",
+        "description": "20日简单均线"
+      },
+      {
+        "name": "ema_12",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "ema(收盘, 12)",
+        "description": "12日指数均线"
+      },
+      {
+        "name": "ema_26",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "ema(收盘, 26)",
+        "description": "26日指数均线"
+      },
+      {
+        "name": "rsi",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "rsi(收盘, 14)",
+        "description": "14日RSI"
+      },
+      {
+        "name": "macd",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "macd_line(收盘, 12, 26, 9)",
+        "description": "MACD主线"
+      },
+      {
+        "name": "macd_signal",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "macd_signal(收盘, 12, 26, 9)",
+        "description": "MACD信号线"
+      },
+      {
+        "name": "volume_change",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "pct_change(成交量, 1)",
+        "description": "成交量环比变化"
+      },
+      {
+        "name": "obv",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "obv(收盘, 成交量)",
+        "description": "OBV能量潮"
+      },
+      {
+        "name": "volume_ma_5",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "sma(成交量, 5)",
+        "description": "5日均量"
+      },
+      {
+        "name": "volume_ma_20",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "sma(成交量, 20)",
+        "description": "20日均量"
+      },
+      {
+        "name": "volume_ratio",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "sma(成交量, 5) / (sma(成交量, 20) + 1e-12)",
+        "description": "短长均量比"
+      },
+      {
+        "name": "kdj_k",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "kdj_k(最高, 最低, 收盘, 9, 3, 3)",
+        "description": "KDJ-K值"
+      },
+      {
+        "name": "kdj_d",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "kdj_d(最高, 最低, 收盘, 9, 3, 3)",
+        "description": "KDJ-D值"
+      },
+      {
+        "name": "kdj_j",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "3 * kdj_k(最高, 最低, 收盘, 9, 3, 3) - 2 * kdj_d(最高, 最低, 收盘, 9, 3, 3)",
+        "description": "KDJ-J值"
+      },
+      {
+        "name": "boll_mid",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "boll_mid(收盘, 20, 2)",
+        "description": "布林中轨"
+      },
+      {
+        "name": "boll_std",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "boll_std(收盘, 20, 2)",
+        "description": "布林标准差"
+      },
+      {
+        "name": "atr_14",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "atr(最高, 最低, 收盘, 14)",
+        "description": "14日ATR"
+      },
+      {
+        "name": "ema_60",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "ema(收盘, 60)",
+        "description": "60日指数均线"
+      },
+      {
+        "name": "volatility_10",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "rolling_std(pct_change(收盘, 1), 10)",
+        "description": "10日收益波动率"
+      },
+      {
+        "name": "volatility_20",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "rolling_std(pct_change(收盘, 1), 20)",
+        "description": "20日收益波动率"
+      },
+      {
+        "name": "return_1",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "pct_change(收盘, 1)",
+        "description": "1日收益率"
+      },
+      {
+        "name": "return_5",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "pct_change(收盘, 5)",
+        "description": "5日收益率"
+      },
+      {
+        "name": "return_10",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "pct_change(收盘, 10)",
+        "description": "10日收益率"
+      },
+      {
+        "name": "high_low_spread",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "最高 - 最低",
+        "description": "高低价差"
+      },
+      {
+        "name": "open_close_spread",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "开盘 - 收盘",
+        "description": "开收价差"
+      },
+      {
+        "name": "high_close_spread",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "最高 - 收盘",
+        "description": "高收价差"
+      },
+      {
+        "name": "low_close_spread",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "最低 - 收盘",
+        "description": "低收价差"
+      },
+      {
+        "name": "mom_acc",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "pct_change(收盘, 3) - pct_change(收盘, 10)",
+        "description": "动量加速度"
+      },
+      {
+        "name": "pv_div",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "(最高 - 开盘) / (成交量 + 1e-12)",
+        "description": "量价背离因子"
+      },
+      {
+        "name": "consecutive_pos",
+        "group": "tech39",
+        "source": "builtin",
+        "expression": "rolling_sum((收盘 > 开盘).astype(float), 5)",
+        "description": "5日阳线天数"
+      }
+    ]
+  }
+}

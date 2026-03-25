@@ -7,11 +7,32 @@
 - 保存格式: 股票代码,日期,开盘,收盘,最高,最低,成交量,成交额,振幅,涨跌额,换手率,涨跌幅
 """
 
+import argparse
 import baostock as bs
 import pandas as pd
 from datetime import datetime
 import os
 import time
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="抓取沪深300成分股历史日线数据")
+    parser.add_argument(
+        "--start-date",
+        default="2015-01-01",
+        help="抓取起始日期，格式 YYYY-MM-DD，默认 2015-01-01",
+    )
+    parser.add_argument(
+        "--end-date",
+        default=datetime.today().strftime("%Y-%m-%d"),
+        help="抓取结束日期，格式 YYYY-MM-DD，默认今天",
+    )
+    parser.add_argument(
+        "--output-path",
+        default="./data/stock_data.csv",
+        help="输出文件路径，默认 ./data/stock_data.csv",
+    )
+    return parser.parse_args()
 
 
 def login():
@@ -217,13 +238,13 @@ def merge_stock_data(existing_df, new_df, stock_code):
 
 
 def main():
-    save_dir = "./data"
+    args = parse_args()
+    save_dir = os.path.dirname(args.output_path) or "./data"
     os.makedirs(save_dir, exist_ok=True)
-    
-    start_date = "2024-01-01"
-    end_date = "2026-03-15"
-    
-    output_path = os.path.join(save_dir, "stock_data.csv")
+
+    start_date = args.start_date
+    end_date = args.end_date
+    output_path = args.output_path
     
     print(f"目标数据时间范围: {start_date} 至 {end_date}")
     print(f"输出文件: {output_path}")

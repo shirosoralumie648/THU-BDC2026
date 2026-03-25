@@ -69,6 +69,7 @@
 - `best_model.pth`：最佳模型参数；
 - `scaler.pkl`：标准化器；
 - `config.json`：训练时配置快照；
+- `active_factors.json`：本次训练实际启用的因子快照；
 - `final_score.txt`：最佳分数记录；
 - `log/`：TensorBoard日志。
 
@@ -81,6 +82,10 @@
 5. 按分数降序取前5只，输出到 `output.csv`：
 	 - `stock_id`
 	 - `weight`（固定 `0.2`）
+
+说明：
+- 若模型目录下存在 `active_factors.json`，`predict.py` 会优先使用该快照中的因子配置；
+- 这样即使之后你修改了 `config/factor_store.json`，旧模型推理仍会保持训练时的特征口径。
 
 ### [get_stock_data.py](get_stock_data.py)
 数据抓取脚本（Baostock）：
@@ -125,6 +130,97 @@ sh train.sh
 ```
 sh test.sh
 ```
+
+5) 打开 TensorBoard 查看训练过程与因子面板
+
+```
+sh tensorboard.sh
+```
+
+默认地址：
+
+`http://127.0.0.1:6006`
+
+如果想看其他模型目录：
+
+```
+sh tensorboard.sh ./model/60_158+39/log
+```
+
+6) 管理因子
+
+列出当前因子：
+
+```
+sh factor.sh list
+```
+
+只看启用中的因子：
+
+```
+sh factor.sh list --enabled-only
+```
+
+关闭单个内置因子：
+
+```
+sh factor.sh disable RSQR60
+```
+
+重新启用：
+
+```
+sh factor.sh enable RSQR60
+```
+
+新建自定义因子：
+
+```
+sh factor.sh create gap_open_prev_close \
+  --expression "(开盘 / (shift(收盘, 1) + 1e-12)) - 1" \
+  --group custom
+```
+
+编辑自定义因子：
+
+```
+sh factor.sh update gap_open_prev_close \
+  --expression "(开盘 / (shift(收盘, 1) + 1e-12)) - 1"
+```
+
+查看因子详情：
+
+```
+sh factor.sh show gap_open_prev_close
+```
+
+删除自定义因子：
+
+```
+sh factor.sh delete gap_open_prev_close
+```
+
+因子配置文件默认在：
+
+`config/factor_store.json`
+
+内置因子默认公式注册表在：
+
+`config/builtin_factors.json`
+
+恢复某个内置因子的默认公式：
+
+```
+sh factor.sh reset RSQR60
+```
+
+训练时 TensorBoard 会额外记录：
+- 当前启用因子列表；
+- 内置/自定义因子数量；
+- 被 override 的内置因子数量；
+- 因子分组统计；
+- 前若干个因子的原始分布与标准化后分布直方图。
+- 因子分组消融结果（去掉某一组因子后，验证收益变化多少）。
 
 ---
 
