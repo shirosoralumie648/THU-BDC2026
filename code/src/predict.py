@@ -14,6 +14,7 @@ from factor_store import load_factor_snapshot
 from factor_store import resolve_factor_pipeline
 from model import StockTransformer
 from utils import apply_cross_sectional_normalization
+from utils import augment_engineered_features
 
 
 def preprocess_predict_data(df, stockid2idx, feature_pipeline):
@@ -39,6 +40,15 @@ def preprocess_predict_data(df, stockid2idx, feature_pipeline):
 	processed = processed.dropna(subset=['instrument']).copy()
 	processed['instrument'] = processed['instrument'].astype(np.int64)
 	processed['日期'] = pd.to_datetime(processed['日期'])
+
+	if bool(config.get('use_feature_enhancements', True)):
+		processed, feature_columns = augment_engineered_features(
+			processed,
+			feature_columns,
+			config=config,
+			date_col='日期',
+			stock_col='股票代码',
+		)
 
 	if config.get('use_cross_sectional_feature_norm', True):
 		processed = apply_cross_sectional_normalization(
@@ -158,6 +168,7 @@ def main():
 	scaler_path = os.path.join(config['output_dir'], 'scaler.pkl')
 	output_path = os.path.join('./output/', 'result.csv')
 	factor_snapshot_path = os.path.join(config['output_dir'], 'active_factors.json')
+	effective_features_path = os.path.join(config['output_dir'], 'effective_features.json')
 
 	if not os.path.exists(model_path):
 		raise FileNotFoundError(f'未找到模型文件: {model_path}')
@@ -181,6 +192,16 @@ def main():
 		print(f'未找到训练因子快照，回退到当前因子配置: {config["factor_store_path"]}')
 
 	processed, features = preprocess_predict_data(raw_df, stockid2idx, feature_pipeline)
+	if os.path.exists(effective_features_path):
+		with open(effective_features_path, 'r', encoding='utf-8') as f:
+			saved_features = json.load(f)
+		if not isinstance(saved_features, list) or not saved_features:
+			raise ValueError(f'effective_features.json 格式非法: {effective_features_path}')
+		missing_features = [name for name in saved_features if name not in processed.columns]
+		if missing_features:
+			raise ValueError(f'预测输入缺少训练特征: {missing_features[:10]}')
+		features = saved_features
+		print(f'加载训练特征清单: {effective_features_path} | 特征数: {len(features)}')
 	processed[features] = processed[features].replace([np.inf, -np.inf], np.nan).fillna(0.0)
 	processed = apply_optional_global_scaler(processed, features, scaler_path)
 

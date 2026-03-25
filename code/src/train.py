@@ -13,6 +13,7 @@ from factor_store import resolve_factor_pipeline
 from factor_store import save_factor_snapshot
 from model import StockTransformer
 from utils import apply_cross_sectional_normalization
+from utils import augment_engineered_features
 from utils import create_ranking_dataset_vectorized
 import joblib
 import os
@@ -308,6 +309,15 @@ def _preprocess_common(df, stockid2idx, desc, feature_pipeline, drop_small_open=
     processed['instrument'] = processed['instrument'].astype(np.int64)
 
     processed = _build_label_and_clean(processed, drop_small_open=drop_small_open)
+    if bool(config.get('use_feature_enhancements', True)):
+        processed, feature_columns = augment_engineered_features(
+            processed,
+            feature_columns,
+            config=config,
+            date_col='日期',
+            stock_col='股票代码',
+        )
+
     if config.get('use_cross_sectional_feature_norm', True):
         processed = apply_cross_sectional_normalization(
             processed,
@@ -1556,6 +1566,9 @@ def main():
     # 2. 特征工程与预处理
     train_data, features = preprocess_data(train_df, factor_pipeline, is_train=True, stockid2idx=stockid2idx)
     val_data, _ = preprocess_val_data(val_df, factor_pipeline, stockid2idx=stockid2idx)
+    with open(os.path.join(output_dir, 'effective_features.json'), 'w', encoding='utf-8') as f:
+        json.dump(features, f, ensure_ascii=False, indent=2)
+    print(f'已保存训练特征清单: {os.path.join(output_dir, "effective_features.json")} | 特征数: {len(features)}')
     
     # 3. 特征缩放（默认仅保留截面标准化，不做全局 StandardScaler）
     scaler_path = os.path.join(output_dir, 'scaler.pkl')

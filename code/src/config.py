@@ -54,6 +54,25 @@ config = {
     'label_cs_clip_value': 5.0,
 
     # 特征稳定化：按日截面标准化（训练/推理同口径）
+    'use_feature_enhancements': True,
+    # 静态特征（行业/市值）来自外部映射文件，可选开启
+    'use_static_stock_features': True,
+    'stock_static_feature_path': '',  # 例如 ./data/stock_static_features.csv
+    'stock_static_stock_col': '股票代码',
+    'stock_static_industry_col': '行业',
+    'stock_static_market_cap_col': '流通市值',
+    'stock_static_industry_topk': 12,
+    'stock_static_include_other_bucket': True,
+    # 截面 rank 与行业内相对强弱
+    'use_cross_sectional_rank_features': True,
+    'cross_sectional_rank_source_features': [
+        'rsi', 'return_1', 'return_5', 'volatility_20', 'atr_14', '换手率', '成交额', 'pv_intraday_range_pct'
+    ],
+    'use_industry_relative_z_features': True,
+    'industry_relative_source_features': ['rsi', 'return_1', 'return_5', 'volatility_20', 'atr_14'],
+    # 量价分布风险特征（基于日频 OHLCV）
+    'use_price_volume_distribution_features': True,
+
     'use_cross_sectional_feature_norm': True,
     'feature_cs_norm_method': 'zscore',  # zscore | rank
     'feature_cs_clip_value': 5.0,

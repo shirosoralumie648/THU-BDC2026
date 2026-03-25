@@ -2,6 +2,8 @@ import pandas as pd
 import numpy as np
 import joblib
 import os
+import re
+from functools import lru_cache
 from tqdm import tqdm
 
 
@@ -54,6 +56,324 @@ def apply_cross_sectional_normalization(
 
     out[target_cols] = out[target_cols].replace([np.inf, -np.inf], np.nan).fillna(0.0)
     return out
+
+
+def _safe_feature_name(name):
+    safe = re.sub(r'[^0-9A-Za-z_]+', '_', str(name))
+    safe = re.sub(r'_+', '_', safe).strip('_').lower()
+    if not safe:
+        safe = 'f'
+    if safe[0].isdigit():
+        safe = f'f_{safe}'
+    return safe
+
+
+def _normalize_stock_code_series(series):
+    s = series.astype(str).str.strip()
+    s = s.str.split('.').str[-1]
+    s = s.str.replace(r'[^0-9]', '', regex=True)
+    s = s.str[-6:].str.zfill(6)
+    return s
+
+
+def _infer_existing_column(df, candidates):
+    for col in candidates:
+        if col in df.columns:
+            return col
+    return None
+
+
+@lru_cache(maxsize=16)
+def _load_static_feature_mapping(
+    mapping_path,
+    stock_col,
+    industry_col,
+    market_cap_col,
+    industry_topk,
+    include_other,
+):
+    if not mapping_path or not os.path.exists(mapping_path):
+        return None
+
+    mapping_df = pd.read_csv(mapping_path, dtype=str)
+    resolved_stock_col = stock_col if stock_col in mapping_df.columns else _infer_existing_column(
+        mapping_df, ['股票代码', 'stock_id', 'code', 'ts_code']
+    )
+    if resolved_stock_col is None:
+        return None
+
+    resolved_industry_col = industry_col if industry_col in mapping_df.columns else _infer_existing_column(
+        mapping_df, ['行业', 'industry', 'sw_l1', 'sector']
+    )
+    resolved_market_cap_col = market_cap_col if market_cap_col in mapping_df.columns else _infer_existing_column(
+        mapping_df, ['流通市值', 'float_mv', 'market_cap', 'circulating_market_value']
+    )
+
+    mapping_df = mapping_df.copy()
+    mapping_df['__stock_norm'] = _normalize_stock_code_series(mapping_df[resolved_stock_col])
+    mapping_df = mapping_df.dropna(subset=['__stock_norm'])
+    mapping_df = mapping_df[mapping_df['__stock_norm'] != '']
+    mapping_df = mapping_df.drop_duplicates(subset=['__stock_norm'], keep='last')
+    if mapping_df.empty:
+        return None
+
+    stock_to_industry = {}
+    industry_buckets = []
+    if resolved_industry_col is not None:
+        industry_series = mapping_df[resolved_industry_col].astype(str).str.strip()
+        industry_series = industry_series.replace({'': np.nan})
+        if industry_series.notna().any():
+            mapping_df['__industry'] = industry_series
+            stock_to_industry = (
+                mapping_df
+                .dropna(subset=['__industry'])
+                .set_index('__stock_norm')['__industry']
+                .to_dict()
+            )
+            counts = mapping_df['__industry'].value_counts()
+            topk_values = list(counts.head(max(1, int(industry_topk))).index)
+            if bool(include_other):
+                industry_buckets = topk_values + ['__OTHER__']
+            else:
+                industry_buckets = topk_values
+
+    stock_to_log_mcap = {}
+    if resolved_market_cap_col is not None:
+        cap_raw = mapping_df[resolved_market_cap_col].astype(str).str.replace(',', '', regex=False)
+        cap_num = pd.to_numeric(cap_raw, errors='coerce')
+        cap_num = cap_num.clip(lower=0.0)
+        if cap_num.notna().any():
+            log_cap = np.log1p(cap_num)
+            mapping_df['__log_cap'] = log_cap
+            stock_to_log_mcap = (
+                mapping_df
+                .dropna(subset=['__log_cap'])
+                .set_index('__stock_norm')['__log_cap']
+                .astype(np.float32)
+                .to_dict()
+            )
+
+    return {
+        'stock_to_industry': stock_to_industry,
+        'stock_to_log_mcap': stock_to_log_mcap,
+        'industry_buckets': tuple(industry_buckets),
+    }
+
+
+def _attach_static_stock_features(
+    df,
+    config,
+    stock_col='股票代码',
+    date_col='日期',
+):
+    if not bool(config.get('use_static_stock_features', True)):
+        return df, [], None
+
+    mapping_path = str(config.get('stock_static_feature_path', '')).strip()
+    if not mapping_path:
+        return df, [], None
+
+    static_data = _load_static_feature_mapping(
+        mapping_path=mapping_path,
+        stock_col=str(config.get('stock_static_stock_col', '股票代码')),
+        industry_col=str(config.get('stock_static_industry_col', '行业')),
+        market_cap_col=str(config.get('stock_static_market_cap_col', '流通市值')),
+        industry_topk=int(config.get('stock_static_industry_topk', 12)),
+        include_other=bool(config.get('stock_static_include_other_bucket', True)),
+    )
+    if static_data is None:
+        return df, [], None
+
+    out = df.copy()
+    out['__stock_norm'] = _normalize_stock_code_series(out[stock_col])
+    extra_features = []
+    industry_bucket_col = None
+
+    stock_to_log_mcap = static_data['stock_to_log_mcap']
+    if stock_to_log_mcap:
+        out['st_log_mcap'] = out['__stock_norm'].map(stock_to_log_mcap).astype(np.float32)
+        out['st_log_mcap'] = out['st_log_mcap'].fillna(out['st_log_mcap'].median(skipna=True))
+        out['st_log_mcap_cs_rank'] = out.groupby(date_col)['st_log_mcap'].rank(pct=True).astype(np.float32)
+        extra_features.extend(['st_log_mcap', 'st_log_mcap_cs_rank'])
+
+    stock_to_industry = static_data['stock_to_industry']
+    buckets = list(static_data['industry_buckets'])
+    if stock_to_industry and buckets:
+        out['__industry_raw'] = out['__stock_norm'].map(stock_to_industry)
+        if '__OTHER__' in buckets:
+            top_set = {b for b in buckets if b != '__OTHER__'}
+            out['__industry_bucket'] = out['__industry_raw'].where(
+                out['__industry_raw'].isin(top_set),
+                '__OTHER__',
+            )
+        else:
+            out['__industry_bucket'] = out['__industry_raw']
+        industry_bucket_col = '__industry_bucket'
+
+        for idx, bucket in enumerate(buckets):
+            col_name = f'st_ind_oh_{idx:02d}'
+            out[col_name] = (out['__industry_bucket'] == bucket).astype(np.float32)
+            extra_features.append(col_name)
+
+    out.drop(columns=[c for c in ['__stock_norm', '__industry_raw'] if c in out.columns], inplace=True)
+    return out, extra_features, industry_bucket_col
+
+
+def _add_price_volume_distribution_features(df, stock_col='股票代码', date_col='日期'):
+    if not {'开盘', '收盘', '最高', '最低'}.issubset(df.columns):
+        return df, []
+
+    out = df.copy()
+    out = out.sort_values([stock_col, date_col]).reset_index(drop=True)
+    grouped = out.groupby(stock_col, sort=False)
+    eps = 1e-12
+
+    open_px = out['开盘'].astype(float)
+    close_px = out['收盘'].astype(float)
+    high_px = out['最高'].astype(float)
+    low_px = out['最低'].astype(float)
+    prev_close = grouped['收盘'].shift(1).astype(float)
+
+    out['pv_intraday_return'] = ((close_px - open_px) / (open_px + eps)).astype(np.float32)
+    out['pv_intraday_range_pct'] = ((high_px - low_px) / (open_px + eps)).astype(np.float32)
+    out['pv_gap_return'] = ((open_px - prev_close) / (prev_close + eps)).astype(np.float32)
+    out['pv_close_location'] = ((close_px - low_px) / (high_px - low_px + eps)).astype(np.float32)
+
+    tr1 = (high_px - low_px).abs()
+    tr2 = (high_px - prev_close).abs()
+    tr3 = (low_px - prev_close).abs()
+    true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    out['pv_true_range_pct'] = (true_range / (prev_close + eps)).astype(np.float32)
+
+    log_hl = np.log(high_px + eps) - np.log(low_px + eps)
+    parkinson_daily = np.sqrt(np.maximum((log_hl ** 2) / (4.0 * np.log(2.0) + eps), 0.0))
+    out['pv_parkinson_daily'] = parkinson_daily.astype(np.float32)
+    out['pv_parkinson_5'] = grouped['pv_parkinson_daily'].transform(
+        lambda s: s.rolling(5, min_periods=1).mean()
+    ).astype(np.float32)
+    out['pv_parkinson_20'] = grouped['pv_parkinson_daily'].transform(
+        lambda s: s.rolling(20, min_periods=1).mean()
+    ).astype(np.float32)
+    out['pv_intraday_return_std5'] = grouped['pv_intraday_return'].transform(
+        lambda s: s.rolling(5, min_periods=1).std()
+    ).astype(np.float32)
+
+    if '成交额' in out.columns:
+        ret1 = grouped['收盘'].transform(lambda s: s.pct_change(fill_method=None))
+        amount = out['成交额'].astype(float).abs()
+        out['pv_amihud_illiq'] = (ret1.abs() / (amount + eps)).astype(np.float32)
+
+    if '成交量' in out.columns:
+        log_vol = np.log1p(out['成交量'].astype(float).clip(lower=0.0))
+        vol_mean20 = log_vol.groupby(out[stock_col]).transform(lambda s: s.rolling(20, min_periods=1).mean())
+        vol_std20 = log_vol.groupby(out[stock_col]).transform(lambda s: s.rolling(20, min_periods=1).std())
+        out['pv_volume_z20'] = ((log_vol - vol_mean20) / (vol_std20 + eps)).astype(np.float32)
+
+    new_cols = [
+        'pv_intraday_return',
+        'pv_intraday_range_pct',
+        'pv_gap_return',
+        'pv_close_location',
+        'pv_true_range_pct',
+        'pv_parkinson_daily',
+        'pv_parkinson_5',
+        'pv_parkinson_20',
+        'pv_intraday_return_std5',
+    ]
+    if 'pv_amihud_illiq' in out.columns:
+        new_cols.append('pv_amihud_illiq')
+    if 'pv_volume_z20' in out.columns:
+        new_cols.append('pv_volume_z20')
+    return out, new_cols
+
+
+def _add_cross_sectional_rank_features(
+    df,
+    config,
+    date_col='日期',
+    industry_bucket_col=None,
+):
+    out = df.copy()
+    extra_features = []
+    rank_sources = config.get(
+        'cross_sectional_rank_source_features',
+        ['rsi', 'return_1', 'return_5', 'volatility_20', 'atr_14', '换手率', '成交额', 'pv_intraday_range_pct'],
+    )
+    industry_sources = config.get(
+        'industry_relative_source_features',
+        ['rsi', 'return_1', 'return_5', 'volatility_20', 'atr_14'],
+    )
+
+    if bool(config.get('use_cross_sectional_rank_features', True)):
+        for col in rank_sources:
+            if col not in out.columns:
+                continue
+            rank_col = f'cs_rank_{_safe_feature_name(col)}'
+            out[rank_col] = out.groupby(date_col)[col].rank(pct=True).astype(np.float32)
+            extra_features.append(rank_col)
+
+    if bool(config.get('use_industry_relative_z_features', True)) and industry_bucket_col and industry_bucket_col in out.columns:
+        for col in industry_sources:
+            if col not in out.columns:
+                continue
+            ind_col = f'ind_z_{_safe_feature_name(col)}'
+            means = out.groupby([date_col, industry_bucket_col])[col].transform('mean')
+            stds = out.groupby([date_col, industry_bucket_col])[col].transform('std').replace(0.0, np.nan)
+            out[ind_col] = ((out[col] - means) / (stds + 1e-12)).replace([np.inf, -np.inf], np.nan).fillna(0.0).astype(np.float32)
+            extra_features.append(ind_col)
+
+    return out, extra_features
+
+
+def augment_engineered_features(
+    df,
+    feature_columns,
+    config,
+    date_col='日期',
+    stock_col='股票代码',
+):
+    """
+    在基础因子之上追加增强特征：
+    1) 静态行业/市值特征；
+    2) 量价分布风险特征；
+    3) 截面 rank 与行业内 zscore 特征。
+    """
+    out = df.copy()
+    extra_features = []
+    industry_bucket_col = None
+
+    out, static_cols, industry_bucket_col = _attach_static_stock_features(
+        out,
+        config=config,
+        stock_col=stock_col,
+        date_col=date_col,
+    )
+    extra_features.extend(static_cols)
+
+    if bool(config.get('use_price_volume_distribution_features', True)):
+        out, pv_cols = _add_price_volume_distribution_features(
+            out,
+            stock_col=stock_col,
+            date_col=date_col,
+        )
+        extra_features.extend(pv_cols)
+
+    out, cs_cols = _add_cross_sectional_rank_features(
+        out,
+        config=config,
+        date_col=date_col,
+        industry_bucket_col=industry_bucket_col,
+    )
+    extra_features.extend(cs_cols)
+
+    if industry_bucket_col and industry_bucket_col in out.columns:
+        out.drop(columns=[industry_bucket_col], inplace=True)
+
+    all_features = list(dict.fromkeys([*feature_columns, *extra_features]))
+    all_features = [col for col in all_features if col in out.columns]
+    if all_features:
+        out[all_features] = out[all_features].replace([np.inf, -np.inf], np.nan).fillna(0.0).astype(np.float32)
+    return out, all_features
 
 # 特征工程
 def _rolling_linear_regression(x, y):
