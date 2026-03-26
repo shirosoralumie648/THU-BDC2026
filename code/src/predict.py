@@ -166,6 +166,7 @@ def main():
 	data_file = os.path.join(config['data_path'], 'train.csv')
 	model_path = os.path.join(config['output_dir'], 'best_model.pth')
 	scaler_path = os.path.join(config['output_dir'], 'scaler.pkl')
+	prior_graph_path = os.path.join(config['output_dir'], 'prior_graph_adj.npy')
 	output_path = os.path.join('./output/', 'result.csv')
 	factor_snapshot_path = os.path.join(config['output_dir'], 'active_factors.json')
 	effective_features_path = os.path.join(config['output_dir'], 'effective_features.json')
@@ -222,14 +223,35 @@ def main():
 		device = torch.device('cpu')
 
 	model = StockTransformer(input_dim=len(features), config=config, num_stocks=len(stock_ids))
+	mask_mode = str(config.get('cross_stock_mask_mode', 'similarity')).lower()
+	if os.path.exists(prior_graph_path):
+		prior_graph = np.load(prior_graph_path)
+		if prior_graph.ndim == 2 and prior_graph.shape[0] == prior_graph.shape[1] == len(stock_ids):
+			model.set_prior_graph(torch.from_numpy(prior_graph.astype(np.bool_)))
+			print(f'加载先验图邻接矩阵: {prior_graph_path}')
+		else:
+			print(
+				f'先验图形状与当前股票池不一致，忽略: '
+				f'{prior_graph.shape} vs ({len(stock_ids)}, {len(stock_ids)})'
+			)
+	elif mask_mode in {'prior', 'prior_similarity'}:
+		print('未找到先验图文件，预测阶段回退为 similarity 稀疏注意力。')
+		model.cross_stock_attention.mask_mode = 'similarity'
 	state_dict = torch.load(model_path, map_location=device)
 	load_result = model.load_state_dict(state_dict, strict=False)
-	non_gate_missing = [k for k in load_result.missing_keys if not k.startswith('market_gate.')]
-	if non_gate_missing:
-		raise RuntimeError(f'模型参数缺失且无法兼容: {non_gate_missing[:10]}')
-	if load_result.missing_keys:
+	compatible_prefixes = ('market_gate.', 'volatility_head.')
+	non_compatible_missing = [
+		k for k in load_result.missing_keys
+		if not k.startswith(compatible_prefixes)
+	]
+	if non_compatible_missing:
+		raise RuntimeError(f'模型参数缺失且无法兼容: {non_compatible_missing[:10]}')
+	if any(k.startswith('market_gate.') for k in load_result.missing_keys):
 		print('检测到旧版checkpoint（缺少 market_gate 参数），已自动关闭 market gating 兼容推理')
 		model.use_market_gating = False
+	if any(k.startswith('volatility_head.') for k in load_result.missing_keys):
+		print('检测到旧版checkpoint（缺少 volatility_head 参数），已自动关闭多任务辅助头')
+		model.use_multitask_volatility = False
 	if load_result.unexpected_keys:
 		print(f'模型包含额外参数（将忽略）: {load_result.unexpected_keys[:10]}')
 	model.to(device)

@@ -76,10 +76,34 @@ config = {
     'use_cross_sectional_feature_norm': True,
     'feature_cs_norm_method': 'zscore',  # zscore | rank
     'feature_cs_clip_value': 5.0,
-    # 股票间交互约束：默认启用相似度稀疏注意力，抑制全连接噪声传播
+    # 股票间交互约束：默认启用“先验图 + 相似度”联合稀疏注意力
     'use_cross_stock_attention_mask': True,
-    'cross_stock_mask_mode': 'similarity',  # full | similarity
+    'cross_stock_mask_mode': 'prior_similarity',  # full | similarity | prior | prior_similarity
     'cross_stock_similarity_topk': 40,
+    'prior_similarity_combine': 'intersection',  # intersection | union
+    # 先验图构建配置（行业关系 + 历史收益相关性）
+    'prior_graph_use_industry': True,
+    'prior_graph_use_correlation': True,
+    'prior_graph_industry_map_path': '',  # 留空时回退到 label_industry_map_path/stock_static_feature_path
+    'prior_graph_stock_col': '股票代码',
+    'prior_graph_industry_col': '行业',
+    'prior_graph_corr_source_col': 'label_raw',  # label_raw | label
+    'prior_graph_corr_threshold': 0.2,
+    'prior_graph_corr_topk': 20,
+    'prior_graph_corr_min_periods': 20,
+
+    # 多任务学习：收益率排序（主任务）+ 波动率预测（辅助任务）
+    'use_multitask_volatility': True,
+    'volatility_loss_weight': 0.2,
+    'volatility_loss_type': 'huber',  # huber | mse | l1
+    'volatility_horizon': 5,
+    'use_volatility_label_log1p': True,
+    'use_volatility_label_mad_clip': True,
+    'volatility_label_mad_clip_n': 5.0,
+    'volatility_label_mad_min_scale': 1e-6,
+    'use_volatility_cs_norm': True,
+    'volatility_cs_norm_method': 'zscore',  # zscore | rank
+    'volatility_cs_clip_value': 5.0,
 
     # 市场状态引导门控（model input gating）
     'use_market_gating': True,

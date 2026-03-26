@@ -933,7 +933,9 @@ def create_ranking_dataset_vectorized(
     data = data.sort_values(['instrument', 'datetime']).reset_index(drop=True)
     
     # 2. 确保每只股票都有 'label'（次日涨跌幅），否则无法作为 target
-    data = data.dropna(subset=['label'])
+    has_vol_label = 'vol_label' in data.columns
+    required_cols = ['label'] + (['vol_label'] if has_vol_label else [])
+    data = data.dropna(subset=required_cols)
     
     # 3. 为每只股票生成所有滑动窗口
     # 仅保留满足以下条件的 end_date：
@@ -943,7 +945,7 @@ def create_ranking_dataset_vectorized(
     # 也就是说，保留下来的每一行都已经满足
     # T+1 开盘买入到 T+5 开盘卖出的收益率可计算，
     # 这里不应再额外要求未来 5 个交易日，否则会重复缩短样本。
-    all_windows = []  # 每个元素: (end_date, stock_code, sequence, target)
+    all_windows = []  # 每个元素: (end_date, stock_code, sequence, target, vol_target)
 
     print("Step 1: 为每只股票生成滑动窗口...")
     grouped = data.groupby('instrument')
@@ -955,6 +957,10 @@ def create_ranking_dataset_vectorized(
         # 提取特征和 label
         feature_values = group[features].values.astype(np.float32)  # (T, F)
         labels = group['label'].values.astype(np.float32)           # (T,)
+        if has_vol_label:
+            vol_labels = group['vol_label'].values.astype(np.float32)
+        else:
+            vol_labels = labels.copy()
         dates = group['datetime'].values                            # (T,)
 
         # 生成滑动窗口：从第 sequence_length-1 行开始（0-indexed）
@@ -964,16 +970,18 @@ def create_ranking_dataset_vectorized(
 
             seq = feature_values[i : i + sequence_length]   # (L, F)
             target = labels[end_idx]                        # label 对应窗口最后一天的次日涨跌幅
+            vol_target = vol_labels[end_idx]                # 波动率辅助标签
             end_date = dates[end_idx]                       # 窗口结束日期（即预测日）
-            all_windows.append((end_date, stock_code, seq, target))
+            all_windows.append((end_date, stock_code, seq, target, vol_target))
 
     # 4. 转为 DataFrame 便于按日期聚合
     print("Step 2: 按日期聚合窗口...")
-    window_df = pd.DataFrame(all_windows, columns=['date', 'stock_code', 'seq', 'target'])
+    window_df = pd.DataFrame(all_windows, columns=['date', 'stock_code', 'seq', 'target', 'vol_target'])
 
     # 5. 按 date 分组，构建每日样本
     sequences = []
     targets = []
+    vol_targets = []
     relevance_scores = []
     stock_indices = []
 
@@ -997,6 +1005,7 @@ def create_ranking_dataset_vectorized(
         # 提取数据
         day_seqs = np.stack(group['seq'].values)          # (N, L, F)
         day_targets = group['target'].values              # (N,)
+        day_vol_targets = group['vol_target'].values      # (N,)
         day_stocks = group['stock_code'].tolist()         # [str]
 
         # 计算 relevance（新逻辑：是否属于全市场前 2% 的妖股）
@@ -1005,6 +1014,7 @@ def create_ranking_dataset_vectorized(
 
         sequences.append(day_seqs)
         targets.append(day_targets)
+        vol_targets.append(day_vol_targets)
         relevance_scores.append(relevance)
         stock_indices.append(day_stocks)
 
@@ -1018,4 +1028,4 @@ def create_ranking_dataset_vectorized(
     #     joblib.dump((sequences, targets, relevance_scores, stock_indices), ranking_data_path)
     #     print(f"数据集已保存到: {ranking_data_path}")
 
-    return sequences, targets, relevance_scores, stock_indices
+    return sequences, targets, relevance_scores, stock_indices, vol_targets

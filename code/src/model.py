@@ -34,6 +34,54 @@ class CrossStockAttention(nn.Module):
         self.use_sparse_mask = bool(config.get('use_cross_stock_attention_mask', True))
         self.mask_mode = str(config.get('cross_stock_mask_mode', 'similarity')).lower()
         self.similarity_topk = max(1, int(config.get('cross_stock_similarity_topk', 40)))
+        self.prior_similarity_combine = str(
+            config.get('prior_similarity_combine', 'intersection')
+        ).lower()
+        self.register_buffer(
+            'prior_graph_adj',
+            torch.empty(0, 0, dtype=torch.bool),
+            persistent=False,
+        )
+
+    def set_prior_graph(self, prior_graph_adj):
+        """设置股票先验关系图邻接矩阵，形状 [num_stocks, num_stocks]。"""
+        if prior_graph_adj is None:
+            self.prior_graph_adj = torch.empty(
+                0,
+                0,
+                dtype=torch.bool,
+                device=self.prior_graph_adj.device,
+            )
+            return
+
+        if not isinstance(prior_graph_adj, torch.Tensor):
+            prior_graph_adj = torch.as_tensor(prior_graph_adj)
+        if prior_graph_adj.dim() != 2 or prior_graph_adj.size(0) != prior_graph_adj.size(1):
+            raise ValueError(
+                f'prior_graph_adj 形状非法: {tuple(prior_graph_adj.shape)}，期望 [N, N]'
+            )
+        self.prior_graph_adj = prior_graph_adj.to(
+            device=self.prior_graph_adj.device,
+            dtype=torch.bool,
+        )
+
+    def _expand_multihead_blocked_mask(self, blocked):
+        batch_size, num_stocks, _ = blocked.size()
+        blocked = blocked.unsqueeze(1).expand(-1, self.nhead, -1, -1)
+        return blocked.reshape(batch_size * self.nhead, num_stocks, num_stocks)
+
+    def _stabilize_padding_queries(self, allowed, stock_valid_mask):
+        """
+        对于 padding query，放开到所有有效 key，避免该行全部 -inf 造成数值问题。
+        """
+        batch_size = allowed.size(0)
+        for b in range(batch_size):
+            valid_key_row = stock_valid_mask[b]
+            if valid_key_row.any():
+                allowed[b, ~stock_valid_mask[b], :] = valid_key_row
+            else:
+                allowed[b, ~stock_valid_mask[b], :] = True
+        return allowed
 
     def _build_similarity_sparse_mask(self, stock_features, stock_valid_mask):
         """
@@ -62,20 +110,56 @@ class CrossStockAttention(nn.Module):
         valid_pairs = stock_valid_mask.unsqueeze(1) & stock_valid_mask.unsqueeze(2)
         allowed = (allowed | (eye & valid_pairs)) & valid_keys
 
-        # 对于 padding query，放开到所有有效 key，避免该行全部 -inf 导致数值问题。
-        for b in range(batch_size):
-            valid_key_row = stock_valid_mask[b]
-            if valid_key_row.any():
-                allowed[b, ~stock_valid_mask[b], :] = valid_key_row
-            else:
-                allowed[b, ~stock_valid_mask[b], :] = True
+        allowed = self._stabilize_padding_queries(allowed, stock_valid_mask)
 
         blocked = ~allowed  # True 表示禁止关注
-        blocked = blocked.unsqueeze(1).expand(-1, self.nhead, -1, -1)
-        return blocked.reshape(batch_size * self.nhead, num_stocks, num_stocks)
+        return self._expand_multihead_blocked_mask(blocked)
+
+    def _build_prior_sparse_mask(self, stock_indices, stock_valid_mask):
+        if stock_indices is None:
+            return None
+        if self.prior_graph_adj.numel() == 0:
+            return None
+
+        batch_size, num_stocks = stock_indices.size()
+        graph_size = self.prior_graph_adj.size(0)
+        if graph_size <= 0:
+            return None
+
+        safe_indices = stock_indices.long().clamp(min=0, max=graph_size - 1)
+        prior_adj = self.prior_graph_adj[
+            safe_indices.unsqueeze(-1),
+            safe_indices.unsqueeze(-2),
+        ]  # [B, N, N]
+
+        valid_keys = stock_valid_mask.unsqueeze(1).expand(-1, num_stocks, -1)
+        valid_pairs = stock_valid_mask.unsqueeze(1) & stock_valid_mask.unsqueeze(2)
+        allowed = (prior_adj & valid_pairs) & valid_keys
+
+        eye = torch.eye(num_stocks, dtype=torch.bool, device=stock_indices.device).unsqueeze(0)
+        allowed = allowed | (eye & valid_pairs)
+        allowed = self._stabilize_padding_queries(allowed, stock_valid_mask)
+
+        blocked = ~allowed
+        return self._expand_multihead_blocked_mask(blocked)
+
+    def _combine_blocked_masks(self, blocked_a, blocked_b):
+        if blocked_a is None:
+            return blocked_b
+        if blocked_b is None:
+            return blocked_a
+
+        if self.prior_similarity_combine in {'intersection', 'and'}:
+            # 允许边取交集（更稀疏）：blocked = blocked_a OR blocked_b
+            return blocked_a | blocked_b
+        if self.prior_similarity_combine in {'union', 'or'}:
+            # 允许边取并集（更宽松）：blocked = blocked_a AND blocked_b
+            return blocked_a & blocked_b
+        raise ValueError(
+            f'不支持的 prior_similarity_combine: {self.prior_similarity_combine}'
+        )
 
     def _build_attention_mask(self, stock_features, stock_indices=None, stock_valid_mask=None):
-        # 预留 stock_indices 入口，便于后续接入“行业先验掩码”。
         if (not self.use_sparse_mask) or self.mask_mode == 'full':
             return None
 
@@ -91,6 +175,15 @@ class CrossStockAttention(nn.Module):
 
         if self.mask_mode == 'similarity':
             return self._build_similarity_sparse_mask(stock_features, stock_valid_mask)
+        if self.mask_mode == 'prior':
+            prior_mask = self._build_prior_sparse_mask(stock_indices, stock_valid_mask)
+            if prior_mask is not None:
+                return prior_mask
+            return self._build_similarity_sparse_mask(stock_features, stock_valid_mask)
+        if self.mask_mode == 'prior_similarity':
+            prior_mask = self._build_prior_sparse_mask(stock_indices, stock_valid_mask)
+            similarity_mask = self._build_similarity_sparse_mask(stock_features, stock_valid_mask)
+            return self._combine_blocked_masks(prior_mask, similarity_mask)
 
         return None
 
@@ -143,6 +236,12 @@ class StockTransformer(nn.Module):
         self.num_stocks = num_stocks
         self.use_market_gating = bool(config.get('use_market_gating', True))
         self.market_gate_residual = float(config.get('market_gate_residual', 0.5))
+        self.use_multitask_volatility = bool(config.get('use_multitask_volatility', False))
+        self.register_buffer(
+            'prior_graph_adj',
+            torch.empty(0, 0, dtype=torch.bool),
+            persistent=False,
+        )
 
         if self.use_market_gating:
             gate_hidden_dim = int(config.get('market_gate_hidden_dim', max(32, input_dim // 2)))
@@ -200,6 +299,15 @@ class StockTransformer(nn.Module):
             nn.Dropout(config['dropout'] * 0.5),
             nn.Linear(config['d_model'] // 4, 1)
         )
+
+        self.volatility_head = None
+        if self.use_multitask_volatility:
+            self.volatility_head = nn.Sequential(
+                nn.Linear(config['d_model'] // 2, config['d_model'] // 4),
+                nn.ReLU(),
+                nn.Dropout(config['dropout'] * 0.5),
+                nn.Linear(config['d_model'] // 4, 1),
+            )
         
         # 初始化权重
         self._init_weights()
@@ -211,8 +319,33 @@ class StockTransformer(nn.Module):
                 nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
+
+    def set_prior_graph(self, prior_graph_adj):
+        if prior_graph_adj is None:
+            self.prior_graph_adj = torch.empty(
+                0,
+                0,
+                dtype=torch.bool,
+                device=self.prior_graph_adj.device,
+            )
+            self.cross_stock_attention.set_prior_graph(None)
+            return
+
+        if not isinstance(prior_graph_adj, torch.Tensor):
+            prior_graph_adj = torch.as_tensor(prior_graph_adj)
+        if prior_graph_adj.dim() != 2 or prior_graph_adj.size(0) != prior_graph_adj.size(1):
+            raise ValueError(
+                f'prior_graph_adj 形状非法: {tuple(prior_graph_adj.shape)}，期望 [N, N]'
+            )
+
+        prior_graph_adj = prior_graph_adj.to(
+            device=self.prior_graph_adj.device,
+            dtype=torch.bool,
+        )
+        self.prior_graph_adj = prior_graph_adj
+        self.cross_stock_attention.set_prior_graph(self.prior_graph_adj)
     
-    def forward(self, src, stock_indices=None, stock_valid_mask=None):
+    def forward(self, src, stock_indices=None, stock_valid_mask=None, return_aux=False):
         # src: [batch, num_stocks, seq_len, feature_dim]
         batch_size, num_stocks, seq_len, feature_dim = src.size()
         if stock_valid_mask is None:
@@ -265,5 +398,9 @@ class StockTransformer(nn.Module):
         
         # 重塑为最终输出格式
         output = scores.view(batch_size, num_stocks)  # [batch, num_stocks]
-        
+
+        if return_aux and self.use_multitask_volatility and self.volatility_head is not None:
+            vol_scores = self.volatility_head(ranking_features).view(batch_size, num_stocks)
+            return output, vol_scores
+
         return output

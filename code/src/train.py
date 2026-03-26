@@ -150,6 +150,170 @@ def _load_stock_industry_mapping():
     return mapping
 
 
+def _resolve_prior_graph_industry_path():
+    candidates = [
+        str(config.get('prior_graph_industry_map_path', '')).strip(),
+        str(config.get('label_industry_map_path', '')).strip(),
+        str(config.get('stock_static_feature_path', '')).strip(),
+    ]
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+    return ''
+
+
+@lru_cache(maxsize=1)
+def _load_prior_graph_industry_mapping():
+    mapping_path = _resolve_prior_graph_industry_path()
+    if not mapping_path:
+        return {}
+
+    mapping_df = pd.read_csv(mapping_path, dtype=str)
+    stock_col = str(config.get('prior_graph_stock_col', '股票代码')).strip()
+    industry_col = str(config.get('prior_graph_industry_col', '行业')).strip()
+
+    if stock_col not in mapping_df.columns:
+        stock_col = _infer_existing_column(mapping_df, ['股票代码', 'stock_id', 'code', 'ts_code'])
+        if stock_col is None:
+            return {}
+    if industry_col not in mapping_df.columns:
+        industry_col = _infer_existing_column(mapping_df, ['行业', 'industry', 'sw_l1', 'sector'])
+        if industry_col is None:
+            return {}
+
+    mapping_df = mapping_df[[stock_col, industry_col]].copy()
+    mapping_df[stock_col] = _normalize_stock_code_series(mapping_df[stock_col])
+    mapping_df[industry_col] = mapping_df[industry_col].astype(str).str.strip()
+    mapping_df = mapping_df.dropna(subset=[stock_col, industry_col])
+    mapping_df = mapping_df[mapping_df[industry_col] != '']
+    if mapping_df.empty:
+        return {}
+
+    mapping = (
+        mapping_df
+        .drop_duplicates(subset=[stock_col], keep='last')
+        .set_index(stock_col)[industry_col]
+        .to_dict()
+    )
+    return mapping
+
+
+def _build_industry_prior_adjacency(stockid2idx, num_stocks):
+    if not bool(config.get('prior_graph_use_industry', True)):
+        return np.zeros((num_stocks, num_stocks), dtype=bool)
+
+    stock_to_industry = _load_prior_graph_industry_mapping()
+    if not stock_to_industry:
+        return np.zeros((num_stocks, num_stocks), dtype=bool)
+
+    industry_to_indices = {}
+    stock_codes = list(stockid2idx.keys())
+    normalized_codes = _normalize_stock_code_series(pd.Series(stock_codes)).tolist()
+    for stock_code, normalized in zip(stock_codes, normalized_codes):
+        idx = stockid2idx[stock_code]
+        industry = stock_to_industry.get(normalized, None)
+        if not industry:
+            continue
+        industry_to_indices.setdefault(industry, []).append(int(idx))
+
+    adj = np.zeros((num_stocks, num_stocks), dtype=bool)
+    for indices in industry_to_indices.values():
+        if len(indices) <= 1:
+            continue
+        idx_arr = np.asarray(indices, dtype=np.int64)
+        adj[np.ix_(idx_arr, idx_arr)] = True
+    return adj
+
+
+def _build_correlation_prior_adjacency(train_data, num_stocks):
+    if not bool(config.get('prior_graph_use_correlation', True)):
+        return np.zeros((num_stocks, num_stocks), dtype=bool)
+    if 'instrument' not in train_data.columns or '日期' not in train_data.columns:
+        return np.zeros((num_stocks, num_stocks), dtype=bool)
+
+    source_col = str(config.get('prior_graph_corr_source_col', 'label_raw')).strip()
+    if source_col not in train_data.columns:
+        source_col = 'label' if 'label' in train_data.columns else source_col
+    if source_col not in train_data.columns:
+        return np.zeros((num_stocks, num_stocks), dtype=bool)
+
+    corr_min_periods = int(config.get('prior_graph_corr_min_periods', 20))
+    corr_threshold = float(config.get('prior_graph_corr_threshold', 0.2))
+    corr_topk = max(0, int(config.get('prior_graph_corr_topk', 20)))
+
+    pivot = train_data.pivot_table(
+        index='日期',
+        columns='instrument',
+        values=source_col,
+        aggfunc='mean',
+    )
+    if pivot.empty:
+        return np.zeros((num_stocks, num_stocks), dtype=bool)
+
+    corr = pivot.corr(min_periods=max(2, corr_min_periods))
+    if corr.empty:
+        return np.zeros((num_stocks, num_stocks), dtype=bool)
+
+    valid_cols = []
+    for col in corr.columns:
+        try:
+            idx = int(col)
+        except Exception:
+            continue
+        if 0 <= idx < num_stocks:
+            valid_cols.append(idx)
+    if not valid_cols:
+        return np.zeros((num_stocks, num_stocks), dtype=bool)
+
+    corr = corr.loc[valid_cols, valid_cols]
+    abs_corr = np.nan_to_num(np.abs(corr.to_numpy(dtype=np.float32)), nan=0.0, posinf=0.0, neginf=0.0)
+    np.fill_diagonal(abs_corr, 0.0)
+
+    local_adj = np.zeros_like(abs_corr, dtype=bool)
+    if corr_threshold > 0.0:
+        local_adj |= abs_corr >= corr_threshold
+    if corr_topk > 0:
+        num_local = abs_corr.shape[0]
+        for i in range(num_local):
+            row = abs_corr[i]
+            if row.size == 0:
+                continue
+            k = min(corr_topk, row.size)
+            if k <= 0:
+                continue
+            topk_idx = np.argpartition(row, -k)[-k:]
+            local_adj[i, topk_idx] = True
+
+    local_adj = local_adj | local_adj.T
+    np.fill_diagonal(local_adj, False)
+
+    full_adj = np.zeros((num_stocks, num_stocks), dtype=bool)
+    idx_arr = np.asarray(valid_cols, dtype=np.int64)
+    full_adj[np.ix_(idx_arr, idx_arr)] = local_adj
+    return full_adj
+
+
+def build_prior_graph_adjacency(train_data, stockid2idx):
+    num_stocks = len(stockid2idx)
+    if num_stocks <= 0:
+        raise ValueError('stockid2idx 为空，无法构建先验图')
+
+    industry_adj = _build_industry_prior_adjacency(stockid2idx, num_stocks)
+    corr_adj = _build_correlation_prior_adjacency(train_data, num_stocks)
+    prior_adj = industry_adj | corr_adj
+    np.fill_diagonal(prior_adj, True)
+
+    total_edges = int(prior_adj.sum())
+    density = total_edges / float(num_stocks * num_stocks)
+    print(
+        f"先验图构建完成: num_stocks={num_stocks}, "
+        f"industry_edges={int(industry_adj.sum())}, "
+        f"corr_edges={int(corr_adj.sum())}, "
+        f"merged_edges={total_edges}, density={density:.4f}"
+    )
+    return prior_adj.astype(np.bool_)
+
+
 def _neutralize_label_by_benchmark(processed, label_col='label', date_col='日期'):
     bench_series = _load_benchmark_return_series()
     if bench_series is None:
@@ -251,30 +415,113 @@ def _apply_label_mad_clipping(processed, label_col='label', date_col='日期'):
     return out
 
 
+def _build_future_volatility_label(
+    processed,
+    stock_col='股票代码',
+    open_col='开盘',
+    horizon=5,
+):
+    """
+    未来实现波动率标签：
+    使用 future open-to-open 收益率序列的标准差（ddof=0）。
+    """
+    out = processed.copy()
+    horizon = max(3, int(horizon))
+
+    grouped_open = out.groupby(stock_col)[open_col]
+    open_cols = []
+    for step in range(1, horizon + 1):
+        col = f'open_t{step}'
+        out[col] = grouped_open.shift(-step)
+        open_cols.append(col)
+
+    future_ret_cols = []
+    for step in range(1, horizon):
+        prev_col = f'open_t{step}'
+        next_col = f'open_t{step + 1}'
+        ret_col = f'future_ret_{step}_{step + 1}'
+        out[ret_col] = (out[next_col] - out[prev_col]) / (out[prev_col] + 1e-12)
+        future_ret_cols.append(ret_col)
+
+    out['vol_label'] = out[future_ret_cols].std(axis=1, ddof=0)
+    out = out.drop(columns=future_ret_cols)
+    return out, open_cols
+
+
+def _apply_volatility_label_processing(processed, label_col='vol_label', date_col='日期'):
+    if label_col not in processed.columns or date_col not in processed.columns:
+        return processed
+
+    out = processed.copy()
+    out[label_col] = pd.to_numeric(out[label_col], errors='coerce').clip(lower=0.0)
+
+    if bool(config.get('use_volatility_label_log1p', True)):
+        out[label_col] = np.log1p(out[label_col])
+
+    if bool(config.get('use_volatility_label_mad_clip', True)):
+        mad_n = float(config.get('volatility_label_mad_clip_n', 5.0))
+        mad_min_scale = float(config.get('volatility_label_mad_min_scale', 1e-6))
+
+        median = out.groupby(date_col)[label_col].transform('median')
+        abs_dev = (out[label_col] - median).abs()
+        mad = abs_dev.groupby(out[date_col]).transform('median')
+        robust_sigma = (mad * 1.4826).clip(lower=mad_min_scale)
+        lower = median - mad_n * robust_sigma
+        upper = median + mad_n * robust_sigma
+        out[label_col] = out[label_col].clip(lower=lower, upper=upper)
+
+    if bool(config.get('use_volatility_cs_norm', True)):
+        method = str(config.get('volatility_cs_norm_method', 'zscore')).lower()
+        if method == 'zscore':
+            means = out.groupby(date_col)[label_col].transform('mean')
+            stds = out.groupby(date_col)[label_col].transform('std').replace(0.0, np.nan)
+            out[label_col] = (out[label_col] - means) / (stds + 1e-6)
+        elif method == 'rank':
+            out[label_col] = out.groupby(date_col)[label_col].rank(pct=True) * 2.0 - 1.0
+        else:
+            raise ValueError(f'不支持的 volatility_cs_norm_method: {method}')
+
+        clip_value = config.get('volatility_cs_clip_value', None)
+        if clip_value is not None:
+            clip_value = float(clip_value)
+            out[label_col] = out[label_col].clip(lower=-clip_value, upper=clip_value)
+
+    out[label_col] = out[label_col].replace([np.inf, -np.inf], np.nan).astype(np.float32)
+    return out
+
+
 def _build_label_and_clean(processed, drop_small_open=True):
     """统一构建标签并清洗无效样本。"""
     processed = processed.copy()
-    processed.loc[:, 'open_t1'] = processed.groupby('股票代码')['开盘'].shift(-1)
-    processed.loc[:, 'open_t5'] = processed.groupby('股票代码')['开盘'].shift(-5)
+    return_horizon = 5
+    vol_horizon = max(return_horizon, int(config.get('volatility_horizon', 5)))
+    processed, open_cols = _build_future_volatility_label(
+        processed,
+        stock_col='股票代码',
+        open_col='开盘',
+        horizon=vol_horizon,
+    )
 
     # 过滤无效开盘价，避免收益率极端爆炸
     if drop_small_open:
         processed = processed.loc[processed['open_t1'] > 1e-4].copy()
 
     processed.loc[:, 'label'] = (
-        (processed['open_t5'] - processed['open_t1']) / (processed['open_t1'] + 1e-12)
+        (processed[f'open_t{return_horizon}'] - processed['open_t1']) / (processed['open_t1'] + 1e-12)
     )
-    processed = processed.dropna(subset=['label']).copy()
+    processed = processed.dropna(subset=['label', 'vol_label']).copy()
     processed.loc[:, 'label_raw'] = processed['label'].astype(np.float32)
+    processed.loc[:, 'vol_label_raw'] = processed['vol_label'].astype(np.float32)
 
     # 标签处理关键修正：
     # 1) 市场中性化 -> 预测超额收益率(alpha)；
     # 2) MAD 去极值 -> 抑制异常波动样本对训练的干扰。
     processed = _apply_label_market_neutralization(processed, label_col='label', date_col='日期')
     processed = _apply_label_mad_clipping(processed, label_col='label', date_col='日期')
+    processed = _apply_volatility_label_processing(processed, label_col='vol_label', date_col='日期')
     processed.loc[:, 'label'] = processed['label'].astype(np.float32)
-
-    processed = processed.drop(columns=['open_t1', 'open_t5'])
+    processed = processed.dropna(subset=['label', 'vol_label']).copy()
+    processed = processed.drop(columns=[col for col in open_cols if col in processed.columns])
     return processed
 
 
@@ -814,11 +1061,12 @@ def log_factor_dashboard(writer, feature_pipeline, raw_hist_frame, scaled_hist_f
 
 class RankingDataset(torch.utils.data.Dataset):
     """排序数据集类"""
-    def __init__(self, sequences, targets, relevance_scores, stock_indices):
+    def __init__(self, sequences, targets, relevance_scores, stock_indices, vol_targets=None):
         self.sequences = sequences
         self.targets = targets
         self.relevance_scores = relevance_scores
         self.stock_indices = stock_indices
+        self.vol_targets = vol_targets if vol_targets is not None else targets
     
     def __len__(self):
         return len(self.sequences)
@@ -828,7 +1076,8 @@ class RankingDataset(torch.utils.data.Dataset):
             'sequences': torch.FloatTensor(np.array(self.sequences[idx])),  # [num_stocks, seq_len, features]
             'targets': torch.FloatTensor(np.array(self.targets[idx])),      # [num_stocks] 真实涨跌幅
             'relevance': torch.LongTensor(np.array(self.relevance_scores[idx])),  # [num_stocks] 排序标签
-            'stock_indices': torch.LongTensor(np.array(self.stock_indices[idx]))  # [num_stocks] 股票索引
+            'stock_indices': torch.LongTensor(np.array(self.stock_indices[idx])),  # [num_stocks] 股票索引
+            'vol_targets': torch.FloatTensor(np.array(self.vol_targets[idx])),      # [num_stocks] 波动率标签
         }
 
 
@@ -846,6 +1095,7 @@ class LazyRankingDataset(torch.utils.data.Dataset):
         entry = self.day_entries[idx]
         day_sequences = []
         day_targets = []
+        day_vol_targets = []
         day_stock_indices = []
 
         for stock_idx, end_idx in entry['entries']:
@@ -857,17 +1107,21 @@ class LazyRankingDataset(torch.utils.data.Dataset):
                 )
             seq = stock_data['features'][end_idx - self.sequence_length + 1:end_idx + 1]
             target = stock_data['labels'][end_idx]
+            vol_target = stock_data['vol_labels'][end_idx]
             day_sequences.append(seq)
             day_targets.append(target)
+            day_vol_targets.append(vol_target)
             day_stock_indices.append(stock_idx)
 
         day_targets = np.asarray(day_targets, dtype=np.float32)
+        day_vol_targets = np.asarray(day_vol_targets, dtype=np.float32)
         threshold_2pct = np.quantile(day_targets, 0.98)
         relevance = (day_targets >= threshold_2pct).astype(np.float32)
 
         return {
             'sequences': torch.FloatTensor(np.asarray(day_sequences, dtype=np.float32)),
             'targets': torch.FloatTensor(day_targets),
+            'vol_targets': torch.FloatTensor(day_vol_targets),
             'relevance': torch.LongTensor(relevance.astype(np.int64)),
             'stock_indices': torch.LongTensor(np.asarray(day_stock_indices, dtype=np.int64)),
         }
@@ -876,6 +1130,7 @@ def collate_fn(batch):
     """自定义collate函数处理变长序列"""
     sequences = [item['sequences'] for item in batch]
     targets = [item['targets'] for item in batch]
+    vol_targets = [item.get('vol_targets', item['targets']) for item in batch]
     relevance = [item['relevance'] for item in batch]
     stock_indices = [item['stock_indices'] for item in batch]
     
@@ -885,11 +1140,12 @@ def collate_fn(batch):
     # Padding到相同长度
     padded_sequences = []
     padded_targets = []
+    padded_vol_targets = []
     padded_relevance = []
     padded_stock_indices = []
     masks = []
     
-    for seq, tgt, rel, stock_idx in zip(sequences, targets, relevance, stock_indices):
+    for seq, tgt, vol_tgt, rel, stock_idx in zip(sequences, targets, vol_targets, relevance, stock_indices):
         num_stocks = seq.size(0)
         seq_len = seq.size(1)
         feature_dim = seq.size(2)
@@ -899,11 +1155,13 @@ def collate_fn(batch):
             pad_size = max_stocks - num_stocks
             seq_pad = torch.zeros(pad_size, seq_len, feature_dim)
             tgt_pad = torch.zeros(pad_size)
+            vol_tgt_pad = torch.zeros(pad_size)
             rel_pad = torch.zeros(pad_size, dtype=torch.long)
             stock_pad = torch.zeros(pad_size, dtype=torch.long)
             
             seq = torch.cat([seq, seq_pad], dim=0)
             tgt = torch.cat([tgt, tgt_pad], dim=0)
+            vol_tgt = torch.cat([vol_tgt, vol_tgt_pad], dim=0)
             rel = torch.cat([rel, rel_pad], dim=0)
             stock_idx = torch.cat([stock_idx, stock_pad], dim=0)
         
@@ -913,6 +1171,7 @@ def collate_fn(batch):
         
         padded_sequences.append(seq)
         padded_targets.append(tgt)
+        padded_vol_targets.append(vol_tgt)
         padded_relevance.append(rel)
         padded_stock_indices.append(stock_idx)
         masks.append(mask)
@@ -920,6 +1179,7 @@ def collate_fn(batch):
     return {
         'sequences': torch.stack(padded_sequences),      # [batch, max_stocks, seq_len, features]
         'targets': torch.stack(padded_targets),          # [batch, max_stocks]
+        'vol_targets': torch.stack(padded_vol_targets),  # [batch, max_stocks]
         'relevance': torch.stack(padded_relevance),      # [batch, max_stocks]
         'stock_indices': torch.stack(padded_stock_indices),  # [batch, max_stocks]
         'masks': torch.stack(masks)                      # [batch, max_stocks]
@@ -933,7 +1193,10 @@ def build_lazy_ranking_index(data, features, sequence_length, min_window_end_dat
     indexed = indexed.rename(columns={'日期': 'datetime'})
     indexed['datetime'] = pd.to_datetime(indexed['datetime'])
     indexed = indexed.sort_values(['instrument', 'datetime']).reset_index(drop=True)
-    indexed = indexed.dropna(subset=['label'])
+    required_cols = ['label']
+    if bool(config.get('use_multitask_volatility', False)):
+        required_cols.append('vol_label')
+    indexed = indexed.dropna(subset=required_cols)
 
     if min_window_end_date is not None:
         min_window_end_date = pd.to_datetime(min_window_end_date)
@@ -951,12 +1214,17 @@ def build_lazy_ranking_index(data, features, sequence_length, min_window_end_dat
 
         feature_values = group[features].to_numpy(dtype=np.float32, copy=True)
         labels = group['label'].to_numpy(dtype=np.float32, copy=True)
+        if 'vol_label' in group.columns:
+            vol_labels = group['vol_label'].to_numpy(dtype=np.float32, copy=True)
+        else:
+            vol_labels = labels.copy()
         dates = pd.to_datetime(group['datetime']).to_numpy()
 
         stock_idx = int(stock_idx)
         stock_cache[stock_idx] = {
             'features': feature_values,
             'labels': labels,
+            'vol_labels': vol_labels,
         }
 
         for end_idx in range(sequence_length - 1, len(group)):
@@ -985,15 +1253,46 @@ def build_lazy_ranking_index(data, features, sequence_length, min_window_end_dat
     return stock_cache, day_entries
 
 # 排序训练函数
+def _compute_volatility_aux_loss(vol_pred, vol_target, stock_valid_mask):
+    if vol_pred is None or vol_target is None:
+        return None, None
+    valid_mask = stock_valid_mask.bool()
+    if valid_mask.numel() == 0 or (not bool(valid_mask.any())):
+        return None, None
+
+    pred = vol_pred[valid_mask]
+    true = vol_target[valid_mask]
+    if pred.numel() == 0:
+        return None, None
+
+    loss_type = str(config.get('volatility_loss_type', 'huber')).lower()
+    if loss_type == 'mse':
+        loss = F.mse_loss(pred, true)
+    elif loss_type in {'l1', 'mae'}:
+        loss = F.l1_loss(pred, true)
+    elif loss_type in {'huber', 'smooth_l1'}:
+        loss = F.smooth_l1_loss(pred, true)
+    else:
+        raise ValueError(f'不支持的 volatility_loss_type: {loss_type}')
+
+    mae = torch.mean(torch.abs(pred - true))
+    return loss, mae
+
+
 def train_ranking_model(model, dataloader, criterion, optimizer, device, epoch, writer, strategy_candidates):
     model.train()
     total_loss = 0
     total_metrics = {}
     local_step = 0
+    use_multitask_volatility = bool(config.get('use_multitask_volatility', False))
+    volatility_loss_weight = float(config.get('volatility_loss_weight', 0.2))
     
     for batch in tqdm(dataloader, desc=f"Training Epoch {epoch+1}"):
         sequences = batch['sequences'].to(device)    # [batch, max_stocks, seq_len, features]
         targets = batch['targets'].to(device)        # [batch, max_stocks] 真实涨跌幅
+        vol_targets = batch.get('vol_targets', None)
+        if vol_targets is not None:
+            vol_targets = vol_targets.to(device)
         stock_indices = batch['stock_indices'].to(device)  # [batch, max_stocks]
         masks = batch['masks'].to(device)            # [batch, max_stocks] 有效位置mask
         stock_valid_mask = masks > 0.5
@@ -1005,7 +1304,12 @@ def train_ranking_model(model, dataloader, criterion, optimizer, device, epoch, 
             sequences,
             stock_indices=stock_indices,
             stock_valid_mask=stock_valid_mask,
+            return_aux=use_multitask_volatility,
         )  # [batch, max_stocks] 预测分数
+        if use_multitask_volatility:
+            outputs, vol_outputs = outputs
+        else:
+            vol_outputs = None
         
         # 应用mask，只考虑有效股票
         masked_outputs = outputs * masks + (1 - masks) * (-1e9)  # 无效位置设为很小的值
@@ -1037,15 +1341,28 @@ def train_ranking_model(model, dataloader, criterion, optimizer, device, epoch, 
                 batch_loss = batch_loss + loss if isinstance(batch_loss, torch.Tensor) else loss
         
         if batch_loss is not None:
-            batch_loss = batch_loss / batch_size
-            batch_loss.backward()
+            rank_loss = batch_loss / batch_size
+            total_batch_loss = rank_loss
+
+            vol_aux_loss = None
+            vol_aux_mae = None
+            if use_multitask_volatility and vol_outputs is not None and vol_targets is not None:
+                vol_aux_loss, vol_aux_mae = _compute_volatility_aux_loss(
+                    vol_outputs,
+                    vol_targets,
+                    stock_valid_mask=stock_valid_mask,
+                )
+                if vol_aux_loss is not None:
+                    total_batch_loss = total_batch_loss + volatility_loss_weight * vol_aux_loss
+
+            total_batch_loss.backward()
             if not config.get('drop_clip', True):
                 grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config['max_grad_norm'])
                 if writer:
                     writer.add_scalar('train/grad_norm', grad_norm, global_step=epoch*len(dataloader)+local_step)
             optimizer.step()
             
-            total_loss += batch_loss.item()
+            total_loss += total_batch_loss.item()
             
             # 计算评估指标
             with torch.no_grad():
@@ -1056,6 +1373,10 @@ def train_ranking_model(model, dataloader, criterion, optimizer, device, epoch, 
                     strategy_candidates=strategy_candidates,
                     temperature=config.get('softmax_temperature', 1.0),
                 )
+                metrics['rank_loss'] = float(rank_loss.item())
+                if vol_aux_loss is not None and vol_aux_mae is not None:
+                    metrics['vol_aux_loss'] = float(vol_aux_loss.item())
+                    metrics['vol_mae'] = float(vol_aux_mae.item())
                 for k, v in metrics.items():
                     if k not in total_metrics:
                         total_metrics[k] = 0
@@ -1063,7 +1384,7 @@ def train_ranking_model(model, dataloader, criterion, optimizer, device, epoch, 
             
             local_step += 1
             if writer:
-                writer.add_scalar('train/loss', batch_loss.item(), global_step=epoch*len(dataloader)+local_step)
+                writer.add_scalar('train/loss', total_batch_loss.item(), global_step=epoch*len(dataloader)+local_step)
                 for k, v in metrics.items():
                     writer.add_scalar(f'train/{k}', v, global_step=epoch*len(dataloader)+local_step)
     
@@ -1088,11 +1409,16 @@ def evaluate_ranking_model(
     total_loss = 0
     total_metrics = {}
     num_batches = 0
+    use_multitask_volatility = bool(config.get('use_multitask_volatility', False))
+    volatility_loss_weight = float(config.get('volatility_loss_weight', 0.2))
     
     with torch.no_grad():
         for batch in tqdm(dataloader, desc=f"Evaluating Epoch {epoch+1}"):
             sequences = batch['sequences'].to(device)
             targets = batch['targets'].to(device)
+            vol_targets = batch.get('vol_targets', None)
+            if vol_targets is not None:
+                vol_targets = vol_targets.to(device)
             stock_indices = batch['stock_indices'].to(device)
             masks = batch['masks'].to(device)
             stock_valid_mask = masks > 0.5
@@ -1106,7 +1432,12 @@ def evaluate_ranking_model(
                 sequences,
                 stock_indices=stock_indices,
                 stock_valid_mask=stock_valid_mask,
+                return_aux=use_multitask_volatility,
             )
+            if use_multitask_volatility:
+                outputs, vol_outputs = outputs
+            else:
+                vol_outputs = None
             
             # 应用mask
             masked_outputs = outputs * masks + (1 - masks) * (-1e9)
@@ -1135,9 +1466,26 @@ def evaluate_ranking_model(
                     loss = criterion(valid_pred_for_loss.unsqueeze(0), valid_target_for_loss.unsqueeze(0))
                     batch_loss = batch_loss + loss if batch_loss is not None else loss
             
+            rank_loss = None
             if batch_loss is not None:
-                batch_loss = batch_loss / batch_size
-                total_loss += batch_loss.item()
+                rank_loss = batch_loss / batch_size
+                total_batch_loss = rank_loss
+
+                vol_aux_loss = None
+                vol_aux_mae = None
+                if use_multitask_volatility and vol_outputs is not None and vol_targets is not None:
+                    vol_aux_loss, vol_aux_mae = _compute_volatility_aux_loss(
+                        vol_outputs,
+                        vol_targets,
+                        stock_valid_mask=stock_valid_mask,
+                    )
+                    if vol_aux_loss is not None:
+                        total_batch_loss = total_batch_loss + volatility_loss_weight * vol_aux_loss
+
+                total_loss += total_batch_loss.item()
+            else:
+                vol_aux_loss = None
+                vol_aux_mae = None
             
             # 计算评估指标
             metrics = calculate_ranking_metrics(
@@ -1147,6 +1495,11 @@ def evaluate_ranking_model(
                 strategy_candidates=strategy_candidates,
                 temperature=config.get('softmax_temperature', 1.0),
             )
+            if rank_loss is not None:
+                metrics['rank_loss'] = float(rank_loss.item())
+            if vol_aux_loss is not None and vol_aux_mae is not None:
+                metrics['vol_aux_loss'] = float(vol_aux_loss.item())
+                metrics['vol_mae'] = float(vol_aux_mae.item())
             for k, v in metrics.items():
                 if k not in total_metrics:
                     total_metrics[k] = 0
@@ -1469,7 +1822,7 @@ def build_validation_fold_loaders(val_data, features, val_folds):
     total_samples = 0
 
     for fold in val_folds:
-        sequences, targets, relevance, stock_indices = create_ranking_dataset_vectorized(
+        sequences, targets, relevance, stock_indices, vol_targets = create_ranking_dataset_vectorized(
             val_data,
             features,
             config['sequence_length'],
@@ -1483,7 +1836,13 @@ def build_validation_fold_loaders(val_data, features, val_folds):
                 f"{fold['name']} ({fold['start_date'].date()} ~ {fold['end_date'].date()}) 未生成任何验证样本"
             )
 
-        dataset = RankingDataset(sequences, targets, relevance, stock_indices)
+        dataset = RankingDataset(
+            sequences,
+            targets,
+            relevance,
+            stock_indices,
+            vol_targets=vol_targets,
+        )
         loader = DataLoader(
             dataset,
             batch_size=config['batch_size'],
@@ -1600,6 +1959,18 @@ def main():
     )
     print(f"训练集样本数: {len(train_day_entries)}")
     val_fold_loaders = build_validation_fold_loaders(val_data, features, val_folds)
+
+    mask_mode = str(config.get('cross_stock_mask_mode', 'similarity')).lower()
+    need_prior_graph = bool(config.get('use_cross_stock_attention_mask', True)) and mask_mode in {
+        'prior',
+        'prior_similarity',
+    }
+    prior_graph_adj = None
+    if need_prior_graph:
+        prior_graph_adj = build_prior_graph_adjacency(train_data, stockid2idx)
+        prior_graph_path = os.path.join(output_dir, 'prior_graph_adj.npy')
+        np.save(prior_graph_path, prior_graph_adj.astype(np.uint8))
+        print(f"已保存先验图邻接矩阵: {prior_graph_path}")
     
     # 5. 创建排序数据集和数据加载器
     train_dataset = LazyRankingDataset(train_stock_cache, train_day_entries, config['sequence_length'])
@@ -1617,6 +1988,8 @@ def main():
     
     # 6. 模型初始化
     model = StockTransformer(input_dim=len(features), config=config, num_stocks=num_stocks)
+    if prior_graph_adj is not None:
+        model.set_prior_graph(torch.from_numpy(prior_graph_adj))
     model.to(device)
     print(f"模型参数量: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 

@@ -1,2 +1,2 @@
-Best epoch: 4
-Best final_score: 0.036867
+Best epoch: 19
+Best objective: 0.007815
