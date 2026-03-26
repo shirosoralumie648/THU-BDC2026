@@ -314,6 +314,52 @@ def build_prior_graph_adjacency(train_data, stockid2idx):
     return prior_adj.astype(np.bool_)
 
 
+def build_stock_industry_index(stockid2idx):
+    """
+    构建股票索引到行业索引映射，未知行业记为 -1。
+    """
+    num_stocks = len(stockid2idx)
+    stock_industry_idx = np.full(num_stocks, -1, dtype=np.int64)
+    if num_stocks <= 0:
+        return stock_industry_idx, []
+
+    stock_to_industry = _load_prior_graph_industry_mapping()
+    if not stock_to_industry:
+        print('未加载到行业映射，行业虚拟股将回退为关闭状态。')
+        return stock_industry_idx, []
+
+    stock_codes = list(stockid2idx.keys())
+    normalized_codes = _normalize_stock_code_series(pd.Series(stock_codes)).tolist()
+
+    industries = []
+    for normalized in normalized_codes:
+        industry = stock_to_industry.get(normalized, None)
+        if industry:
+            industries.append(industry)
+    if not industries:
+        print('行业映射与股票池无交集，行业虚拟股将回退为关闭状态。')
+        return stock_industry_idx, []
+
+    industry_vocab = sorted(set(industries))
+    industry2idx = {industry: idx for idx, industry in enumerate(industry_vocab)}
+
+    matched = 0
+    for stock_code, normalized in zip(stock_codes, normalized_codes):
+        industry = stock_to_industry.get(normalized, None)
+        if not industry:
+            continue
+        stock_idx = int(stockid2idx[stock_code])
+        stock_industry_idx[stock_idx] = int(industry2idx[industry])
+        matched += 1
+
+    coverage = matched / float(max(1, num_stocks))
+    print(
+        f"行业映射构建完成: stocks={num_stocks}, matched={matched}, "
+        f"coverage={coverage:.2%}, industries={len(industry_vocab)}"
+    )
+    return stock_industry_idx, industry_vocab
+
+
 def _neutralize_label_by_benchmark(processed, label_col='label', date_col='日期'):
     bench_series = _load_benchmark_return_series()
     if bench_series is None:
@@ -1971,6 +2017,18 @@ def main():
         prior_graph_path = os.path.join(output_dir, 'prior_graph_adj.npy')
         np.save(prior_graph_path, prior_graph_adj.astype(np.uint8))
         print(f"已保存先验图邻接矩阵: {prior_graph_path}")
+
+    use_industry_virtual = bool(config.get('use_industry_virtual_stock', False))
+    use_industry_virtual_temporal = bool(config.get('industry_virtual_on_temporal_cross_stock', False))
+    stock_industry_idx = np.full(num_stocks, -1, dtype=np.int64)
+    if use_industry_virtual or use_industry_virtual_temporal:
+        stock_industry_idx, industry_vocab = build_stock_industry_index(stockid2idx)
+        industry_index_path = os.path.join(output_dir, 'stock_industry_idx.npy')
+        industry_vocab_path = os.path.join(output_dir, 'industry_vocab.json')
+        np.save(industry_index_path, stock_industry_idx.astype(np.int64))
+        with open(industry_vocab_path, 'w', encoding='utf-8') as f:
+            json.dump(industry_vocab, f, ensure_ascii=False, indent=2)
+        print(f"已保存行业索引映射: {industry_index_path} (行业数={len(industry_vocab)})")
     
     # 5. 创建排序数据集和数据加载器
     train_dataset = LazyRankingDataset(train_stock_cache, train_day_entries, config['sequence_length'])
@@ -1990,6 +2048,7 @@ def main():
     model = StockTransformer(input_dim=len(features), config=config, num_stocks=num_stocks)
     if prior_graph_adj is not None:
         model.set_prior_graph(torch.from_numpy(prior_graph_adj))
+    model.set_stock_industry_index(torch.from_numpy(stock_industry_idx))
     model.to(device)
     print(f"模型参数量: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 

@@ -17,6 +17,105 @@ from utils import apply_cross_sectional_normalization
 from utils import augment_engineered_features
 
 
+def _infer_existing_column(df, candidates):
+	for col in candidates:
+		if col in df.columns:
+			return col
+	return None
+
+
+def _normalize_stock_code_series(series):
+	s = series.astype(str).str.strip()
+	s = s.str.split('.').str[-1]
+	s = s.str.replace(r'[^0-9]', '', regex=True)
+	s = s.str[-6:].str.zfill(6)
+	return s
+
+
+def _resolve_prior_graph_industry_path():
+	candidates = [
+		str(config.get('prior_graph_industry_map_path', '')).strip(),
+		str(config.get('label_industry_map_path', '')).strip(),
+		str(config.get('stock_static_feature_path', '')).strip(),
+	]
+	for path in candidates:
+		if path and os.path.exists(path):
+			return path
+	return ''
+
+
+def _load_prior_graph_industry_mapping():
+	mapping_path = _resolve_prior_graph_industry_path()
+	if not mapping_path:
+		return {}
+
+	mapping_df = pd.read_csv(mapping_path, dtype=str)
+	stock_col = str(config.get('prior_graph_stock_col', '股票代码')).strip()
+	industry_col = str(config.get('prior_graph_industry_col', '行业')).strip()
+
+	if stock_col not in mapping_df.columns:
+		stock_col = _infer_existing_column(mapping_df, ['股票代码', 'stock_id', 'code', 'ts_code'])
+		if stock_col is None:
+			return {}
+	if industry_col not in mapping_df.columns:
+		industry_col = _infer_existing_column(mapping_df, ['行业', 'industry', 'sw_l1', 'sector'])
+		if industry_col is None:
+			return {}
+
+	mapping_df = mapping_df[[stock_col, industry_col]].copy()
+	mapping_df[stock_col] = _normalize_stock_code_series(mapping_df[stock_col])
+	mapping_df[industry_col] = mapping_df[industry_col].astype(str).str.strip()
+	mapping_df = mapping_df.dropna(subset=[stock_col, industry_col])
+	mapping_df = mapping_df[mapping_df[industry_col] != '']
+	if mapping_df.empty:
+		return {}
+
+	return (
+		mapping_df
+		.drop_duplicates(subset=[stock_col], keep='last')
+		.set_index(stock_col)[industry_col]
+		.to_dict()
+	)
+
+
+def _build_stock_industry_index(stock_ids):
+	num_stocks = len(stock_ids)
+	stock_industry_idx = np.full(num_stocks, -1, dtype=np.int64)
+	if num_stocks <= 0:
+		return stock_industry_idx, []
+
+	stock_to_industry = _load_prior_graph_industry_mapping()
+	if not stock_to_industry:
+		return stock_industry_idx, []
+
+	normalized_codes = _normalize_stock_code_series(pd.Series(stock_ids)).tolist()
+	industries = []
+	for normalized in normalized_codes:
+		industry = stock_to_industry.get(normalized, None)
+		if industry:
+			industries.append(industry)
+	if not industries:
+		return stock_industry_idx, []
+
+	industry_vocab = sorted(set(industries))
+	industry2idx = {industry: idx for idx, industry in enumerate(industry_vocab)}
+
+	matched = 0
+	for idx, normalized in enumerate(normalized_codes):
+		industry = stock_to_industry.get(normalized, None)
+		if not industry:
+			continue
+		stock_industry_idx[idx] = int(industry2idx[industry])
+		matched += 1
+
+	coverage = matched / float(max(1, num_stocks))
+	print(
+		f'构建行业索引映射: stocks={num_stocks}, matched={matched}, '
+		f'coverage={coverage:.2%}, industries={len(industry_vocab)}'
+	)
+	return stock_industry_idx, industry_vocab
+
+
 def preprocess_predict_data(df, stockid2idx, feature_pipeline):
 	feature_columns = feature_pipeline['active_features']
 	builtin_override_specs = feature_pipeline.get('builtin_override_specs', [])
@@ -167,6 +266,7 @@ def main():
 	model_path = os.path.join(config['output_dir'], 'best_model.pth')
 	scaler_path = os.path.join(config['output_dir'], 'scaler.pkl')
 	prior_graph_path = os.path.join(config['output_dir'], 'prior_graph_adj.npy')
+	industry_index_path = os.path.join(config['output_dir'], 'stock_industry_idx.npy')
 	output_path = os.path.join('./output/', 'result.csv')
 	factor_snapshot_path = os.path.join(config['output_dir'], 'active_factors.json')
 	effective_features_path = os.path.join(config['output_dir'], 'effective_features.json')
@@ -181,6 +281,22 @@ def main():
 
 	stock_ids = sorted(raw_df['股票代码'].unique())
 	stockid2idx = {sid: idx for idx, sid in enumerate(stock_ids)}
+	stock_industry_idx = None
+	if os.path.exists(industry_index_path):
+		try:
+			cached_index = np.load(industry_index_path)
+			if cached_index.ndim == 1 and cached_index.shape[0] == len(stock_ids):
+				stock_industry_idx = cached_index.astype(np.int64)
+				print(f'加载行业索引映射: {industry_index_path}')
+			else:
+				print(
+					f'行业索引映射形状不匹配，回退重建: '
+					f'{cached_index.shape} vs ({len(stock_ids)},)'
+				)
+		except Exception as exc:
+			print(f'读取行业索引映射失败，回退重建: {exc}')
+	if stock_industry_idx is None:
+		stock_industry_idx, _ = _build_stock_industry_index(stock_ids)
 	if os.path.exists(factor_snapshot_path):
 		feature_pipeline = load_factor_snapshot(factor_snapshot_path)
 		print(f'加载训练因子快照: {factor_snapshot_path}')
@@ -223,6 +339,7 @@ def main():
 		device = torch.device('cpu')
 
 	model = StockTransformer(input_dim=len(features), config=config, num_stocks=len(stock_ids))
+	model.set_stock_industry_index(torch.from_numpy(stock_industry_idx))
 	mask_mode = str(config.get('cross_stock_mask_mode', 'similarity')).lower()
 	if os.path.exists(prior_graph_path):
 		prior_graph = np.load(prior_graph_path)

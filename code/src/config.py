@@ -81,6 +81,11 @@ config = {
     'cross_stock_mask_mode': 'prior_similarity',  # full | similarity | prior | prior_similarity
     'cross_stock_similarity_topk': 40,
     'prior_similarity_combine': 'intersection',  # intersection | union
+    # 全局-局部交互：行业均值“虚拟股”参与注意力
+    'use_industry_virtual_stock': True,
+    'industry_virtual_connect_mode': 'same',  # same | all
+    'industry_virtual_min_members': 1,
+    'industry_virtual_on_temporal_cross_stock': False,
     # 先验图构建配置（行业关系 + 历史收益相关性）
     'prior_graph_use_industry': True,
     'prior_graph_use_correlation': True,
