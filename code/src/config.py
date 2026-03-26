@@ -110,6 +110,22 @@ config = {
     'market_gate_hidden_dim': 128,
     'market_gate_residual': 0.5,
 
+    # 多尺度时序编码：超短(1-3日动量) + 短(5-10) + 长(20-60)并行分支
+    'use_multi_scale_temporal': True,
+    'use_ultra_short_branch': True,
+    'multi_scale_ultra_short_windows': [1, 2, 3],
+    'multi_scale_short_windows': [5, 10],
+    'multi_scale_long_windows': [20, 40, 60],
+    'multi_scale_window_reduce': 'mean',   # mean | last
+    'multi_scale_fusion': 'gated',         # gated | weighted_sum
+    # 时间步级跨股交互（MASTER风格）：先做每个时间切片内的股票关系，再做时序编码
+    'use_temporal_cross_stock_attention': True,
+    'temporal_cross_stock_nhead': 4,
+    'use_temporal_cross_stock_attention_mask': True,
+    'temporal_cross_stock_mask_mode': 'similarity',  # full | similarity | prior | prior_similarity
+    'temporal_cross_stock_similarity_topk': 30,
+    'temporal_prior_similarity_combine': 'intersection',  # intersection | union
+
     # 验证期策略选择：均值-波动惩罚，降低 top1 过拟合
     'validation_mode': 'rolling',
     'rolling_val_num_folds': 4,

@@ -4,6 +4,32 @@ import torch.nn.functional as F
 import numpy as np
 import math
 
+def _normalize_scale_windows(windows, sequence_length, default_windows):
+    if windows is None:
+        windows = default_windows
+    if isinstance(windows, (int, float, str)):
+        windows = [windows]
+
+    normalized = []
+    for w in windows:
+        try:
+            w_int = int(w)
+        except (TypeError, ValueError):
+            continue
+        w_int = max(1, min(int(sequence_length), w_int))
+        if w_int not in normalized:
+            normalized.append(w_int)
+
+    if not normalized:
+        fallback = []
+        for w in default_windows:
+            w_int = max(1, min(int(sequence_length), int(w)))
+            if w_int not in fallback:
+                fallback.append(w_int)
+        normalized = fallback if fallback else [max(1, int(sequence_length))]
+
+    return normalized
+
 # 位置编码模块
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, dropout=0.1, max_len=5000):
@@ -234,9 +260,43 @@ class StockTransformer(nn.Module):
         self.model_type = 'RankingTransformer'
         self.config = config
         self.num_stocks = num_stocks
+        self.sequence_length = int(config['sequence_length'])
         self.use_market_gating = bool(config.get('use_market_gating', True))
         self.market_gate_residual = float(config.get('market_gate_residual', 0.5))
         self.use_multitask_volatility = bool(config.get('use_multitask_volatility', False))
+        self.use_multi_scale_temporal = bool(config.get('use_multi_scale_temporal', True))
+        self.use_ultra_short_branch = bool(config.get('use_ultra_short_branch', True))
+        self.use_temporal_cross_stock_attention = bool(
+            config.get('use_temporal_cross_stock_attention', True)
+        )
+        self.temporal_cross_stock_nhead = int(
+            config.get('temporal_cross_stock_nhead', config['nhead'])
+        )
+        if config['d_model'] % self.temporal_cross_stock_nhead != 0:
+            raise ValueError(
+                f"d_model({config['d_model']}) 不能被 temporal_cross_stock_nhead({self.temporal_cross_stock_nhead}) 整除"
+            )
+        self.ultra_short_windows = _normalize_scale_windows(
+            config.get('multi_scale_ultra_short_windows', [1, 2, 3]),
+            self.sequence_length,
+            default_windows=[1, 2, 3],
+        )
+        self.short_windows = _normalize_scale_windows(
+            config.get('multi_scale_short_windows', [5, 10]),
+            self.sequence_length,
+            default_windows=[5, 10],
+        )
+        self.long_windows = _normalize_scale_windows(
+            config.get('multi_scale_long_windows', [20, 40, 60]),
+            self.sequence_length,
+            default_windows=[20, 40, 60],
+        )
+        self.multi_scale_window_reduce = str(config.get('multi_scale_window_reduce', 'mean')).lower()
+        if self.multi_scale_window_reduce not in {'mean', 'last'}:
+            raise ValueError(f"不支持的 multi_scale_window_reduce: {self.multi_scale_window_reduce}")
+        self.multi_scale_fusion = str(config.get('multi_scale_fusion', 'gated')).lower()
+        if self.multi_scale_fusion not in {'gated', 'weighted_sum'}:
+            raise ValueError(f"不支持的 multi_scale_fusion: {self.multi_scale_fusion}")
         self.register_buffer(
             'prior_graph_adj',
             torch.empty(0, 0, dtype=torch.bool),
@@ -257,20 +317,106 @@ class StockTransformer(nn.Module):
         
         # 输入投影层
         self.input_proj = nn.Linear(input_dim, config['d_model'])
-        self.pos_encoder = PositionalEncoding(config['d_model'], config['dropout'], config['sequence_length'])
+        self.pos_encoder = PositionalEncoding(config['d_model'], config['dropout'], self.sequence_length)
+
+        def _build_temporal_encoder():
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=config['d_model'],
+                nhead=config['nhead'],
+                dim_feedforward=config['dim_feedforward'],
+                dropout=config['dropout'],
+                batch_first=True
+            )
+            return nn.TransformerEncoder(encoder_layer, num_layers=config['num_layers'])
+
+        # 基础时序分支
+        self.temporal_encoder = _build_temporal_encoder()
         
-        # 时序特征提取
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=config['d_model'],
-            nhead=config['nhead'],
-            dim_feedforward=config['dim_feedforward'],
-            dropout=config['dropout'],
-            batch_first=True
-        )
-        self.temporal_encoder = nn.TransformerEncoder(encoder_layer, num_layers=config['num_layers'])
-        
-        # 特征注意力
+        # 基础时序聚合
         self.feature_attention = FeatureAttention(config['d_model'], config['dropout'])
+
+        # 时间步级跨股交互（文献对齐：先做同一时间切片的股票关系，再做时序建模）
+        self.temporal_cross_stock_attention = None
+        if self.use_temporal_cross_stock_attention:
+            temporal_mask_cfg = {
+                'use_cross_stock_attention_mask': bool(
+                    config.get(
+                        'use_temporal_cross_stock_attention_mask',
+                        config.get('use_cross_stock_attention_mask', True),
+                    )
+                ),
+                'cross_stock_mask_mode': str(
+                    config.get(
+                        'temporal_cross_stock_mask_mode',
+                        config.get('cross_stock_mask_mode', 'similarity'),
+                    )
+                ),
+                'cross_stock_similarity_topk': max(
+                    1,
+                    int(
+                        config.get(
+                            'temporal_cross_stock_similarity_topk',
+                            config.get('cross_stock_similarity_topk', 40),
+                        )
+                    ),
+                ),
+                'prior_similarity_combine': str(
+                    config.get(
+                        'temporal_prior_similarity_combine',
+                        config.get('prior_similarity_combine', 'intersection'),
+                    )
+                ),
+            }
+            self.temporal_cross_stock_attention = CrossStockAttention(
+                config['d_model'],
+                self.temporal_cross_stock_nhead,
+                config['dropout'],
+                config=temporal_mask_cfg,
+            )
+
+        # 多尺度时序分支（短周期 + 长周期）
+        self.ultra_short_temporal_encoder = None
+        self.ultra_short_feature_attention = None
+        self.short_temporal_encoder = None
+        self.long_temporal_encoder = None
+        self.short_feature_attention = None
+        self.long_feature_attention = None
+        self.short_horizon_fusion_gate = None
+        self.short_horizon_norm = None
+        self.short_horizon_dropout = None
+        self.multi_scale_fusion_gate = None
+        self.multi_scale_branch_norm = None
+        self.multi_scale_branch_dropout = None
+        self.multi_scale_branch_logits = None
+        if self.use_multi_scale_temporal:
+            if self.use_ultra_short_branch:
+                self.ultra_short_temporal_encoder = _build_temporal_encoder()
+                self.ultra_short_feature_attention = FeatureAttention(config['d_model'], config['dropout'])
+            self.short_temporal_encoder = _build_temporal_encoder()
+            self.long_temporal_encoder = _build_temporal_encoder()
+            self.short_feature_attention = FeatureAttention(config['d_model'], config['dropout'])
+            self.long_feature_attention = FeatureAttention(config['d_model'], config['dropout'])
+            if self.use_ultra_short_branch:
+                self.short_horizon_fusion_gate = nn.Sequential(
+                    nn.LayerNorm(config['d_model'] * 2),
+                    nn.Linear(config['d_model'] * 2, config['d_model']),
+                    nn.GELU(),
+                    nn.Dropout(config['dropout']),
+                    nn.Linear(config['d_model'], 2),
+                )
+                self.short_horizon_norm = nn.LayerNorm(config['d_model'])
+                self.short_horizon_dropout = nn.Dropout(config['dropout'])
+            self.multi_scale_branch_norm = nn.LayerNorm(config['d_model'])
+            self.multi_scale_branch_dropout = nn.Dropout(config['dropout'])
+            self.multi_scale_branch_logits = nn.Parameter(torch.zeros(3))
+            if self.multi_scale_fusion == 'gated':
+                self.multi_scale_fusion_gate = nn.Sequential(
+                    nn.LayerNorm(config['d_model'] * 3),
+                    nn.Linear(config['d_model'] * 3, config['d_model']),
+                    nn.GELU(),
+                    nn.Dropout(config['dropout']),
+                    nn.Linear(config['d_model'], 3),
+                )
         
         # 股票间交互注意力
         self.cross_stock_attention = CrossStockAttention(
@@ -320,6 +466,148 @@ class StockTransformer(nn.Module):
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
+    def _apply_temporal_cross_stock_attention(
+        self,
+        projected_src,
+        stock_indices=None,
+        stock_valid_mask=None,
+    ):
+        """
+        projected_src: [B, N, L, D]
+        返回同形状张量，按时间步对股票集合做交互。
+        """
+        if (not self.use_temporal_cross_stock_attention) or self.temporal_cross_stock_attention is None:
+            return projected_src
+
+        batch_size, num_stocks, seq_len, d_model = projected_src.size()
+        if num_stocks <= 1:
+            return projected_src
+
+        step_tokens = projected_src.permute(0, 2, 1, 3).contiguous().reshape(
+            batch_size * seq_len,
+            num_stocks,
+            d_model,
+        )  # [B*L, N, D]
+
+        step_stock_indices = None
+        if stock_indices is not None:
+            step_stock_indices = (
+                stock_indices
+                .unsqueeze(1)
+                .expand(-1, seq_len, -1)
+                .reshape(batch_size * seq_len, num_stocks)
+            )
+
+        step_valid_mask = None
+        if stock_valid_mask is not None:
+            step_valid_mask = (
+                stock_valid_mask.bool()
+                .unsqueeze(1)
+                .expand(-1, seq_len, -1)
+                .reshape(batch_size * seq_len, num_stocks)
+            )
+
+        step_tokens = self.temporal_cross_stock_attention(
+            step_tokens,
+            stock_indices=step_stock_indices,
+            stock_valid_mask=step_valid_mask,
+        )
+
+        return step_tokens.reshape(batch_size, seq_len, num_stocks, d_model).permute(0, 2, 1, 3).contiguous()
+
+    def _extract_temporal_features(
+        self,
+        branch_src,
+        temporal_encoder,
+        stock_indices=None,
+        stock_valid_mask=None,
+    ):
+        """
+        branch_src: [B, N, L, F]
+        返回: [B*N, L, D]
+        """
+        batch_size, num_stocks, seq_len, _ = branch_src.size()
+        projected = self.input_proj(branch_src)
+        projected = self._apply_temporal_cross_stock_attention(
+            projected,
+            stock_indices=stock_indices,
+            stock_valid_mask=stock_valid_mask,
+        )
+        projected = projected.reshape(batch_size * num_stocks, seq_len, -1)
+        projected = self.pos_encoder(projected)
+        return temporal_encoder(projected)
+
+    def _run_temporal_branch(
+        self,
+        branch_src,
+        temporal_encoder,
+        feature_attention,
+        stock_indices=None,
+        stock_valid_mask=None,
+    ):
+        temporal_features = self._extract_temporal_features(
+            branch_src,
+            temporal_encoder,
+            stock_indices=stock_indices,
+            stock_valid_mask=stock_valid_mask,
+        )
+        return feature_attention(temporal_features)
+
+    def _encode_multi_scale_branch(
+        self,
+        src,
+        windows,
+        temporal_encoder,
+        feature_attention,
+        stock_indices=None,
+        stock_valid_mask=None,
+    ):
+        seq_len = src.size(2)
+        effective_windows = [max(1, min(seq_len, int(window))) for window in windows]
+        max_window = max(effective_windows)
+        branch_src = src[:, :, -max_window:, :]
+        branch_temporal = self._extract_temporal_features(
+            branch_src,
+            temporal_encoder,
+            stock_indices=stock_indices,
+            stock_valid_mask=stock_valid_mask,
+        )
+
+        if len(effective_windows) == 1 or self.multi_scale_window_reduce == 'last':
+            return feature_attention(branch_temporal[:, -effective_windows[-1]:, :])
+
+        branch_features = [
+            feature_attention(branch_temporal[:, -window:, :])
+            for window in effective_windows
+        ]
+        stacked = torch.stack(branch_features, dim=0)  # [num_windows, batch*num_stocks, d_model]
+        return torch.mean(stacked, dim=0)
+
+    def _fuse_short_horizon_features(self, ultra_short_features, short_features):
+        if not self.use_ultra_short_branch:
+            return short_features
+        if self.short_horizon_fusion_gate is None:
+            return 0.5 * (ultra_short_features + short_features)
+
+        stacked = torch.stack([ultra_short_features, short_features], dim=1)  # [B*N, 2, D]
+        gate_input = torch.cat([ultra_short_features, short_features], dim=-1)
+        logits = self.short_horizon_fusion_gate(gate_input)  # [B*N, 2]
+        weights = torch.softmax(logits, dim=-1)
+        fused = torch.sum(stacked * weights.unsqueeze(-1), dim=1)
+        return self.short_horizon_norm(short_features + self.short_horizon_dropout(fused))
+
+    def _fuse_multi_scale_features(self, base_features, short_features, long_features):
+        stacked = torch.stack([base_features, short_features, long_features], dim=1)  # [B*N, 3, D]
+        if self.multi_scale_fusion == 'gated' and self.multi_scale_fusion_gate is not None:
+            gate_input = torch.cat([base_features, short_features, long_features], dim=-1)
+            logits = self.multi_scale_fusion_gate(gate_input)  # [B*N, 3]
+        else:
+            logits = self.multi_scale_branch_logits.unsqueeze(0).expand(base_features.size(0), -1)
+
+        weights = torch.softmax(logits, dim=-1)  # [B*N, 3]
+        fused = torch.sum(stacked * weights.unsqueeze(-1), dim=1)
+        return self.multi_scale_branch_norm(base_features + self.multi_scale_branch_dropout(fused))
+
     def set_prior_graph(self, prior_graph_adj):
         if prior_graph_adj is None:
             self.prior_graph_adj = torch.empty(
@@ -329,6 +617,8 @@ class StockTransformer(nn.Module):
                 device=self.prior_graph_adj.device,
             )
             self.cross_stock_attention.set_prior_graph(None)
+            if self.temporal_cross_stock_attention is not None:
+                self.temporal_cross_stock_attention.set_prior_graph(None)
             return
 
         if not isinstance(prior_graph_adj, torch.Tensor):
@@ -344,6 +634,8 @@ class StockTransformer(nn.Module):
         )
         self.prior_graph_adj = prior_graph_adj
         self.cross_stock_attention.set_prior_graph(self.prior_graph_adj)
+        if self.temporal_cross_stock_attention is not None:
+            self.temporal_cross_stock_attention.set_prior_graph(self.prior_graph_adj)
     
     def forward(self, src, stock_indices=None, stock_valid_mask=None, return_aux=False):
         # src: [batch, num_stocks, seq_len, feature_dim]
@@ -364,18 +656,53 @@ class StockTransformer(nn.Module):
             residual = self.market_gate_residual
             src = src * (residual + (1.0 - residual) * gates)
         
-        # 重塑为 [batch*num_stocks, seq_len, feature_dim]
-        src_reshaped = src.view(batch_size * num_stocks, seq_len, feature_dim)
-        
-        # 输入投影和位置编码
-        src_proj = self.input_proj(src_reshaped)  # [batch*num_stocks, seq_len, d_model]
-        src_proj = self.pos_encoder(src_proj)
-        
-        # 时序特征提取
-        temporal_features = self.temporal_encoder(src_proj)  # [batch*num_stocks, seq_len, d_model]
-        
-        # 特征注意力聚合
-        aggregated_features = self.feature_attention(temporal_features)  # [batch*num_stocks, d_model]
+        # 基础时间尺度聚合
+        aggregated_features = self._run_temporal_branch(
+            src,
+            self.temporal_encoder,
+            self.feature_attention,
+            stock_indices=stock_indices,
+            stock_valid_mask=stock_valid_mask,
+        )
+
+        if self.use_multi_scale_temporal:
+            base_short_features = self._encode_multi_scale_branch(
+                src,
+                self.short_windows,
+                self.short_temporal_encoder,
+                self.short_feature_attention,
+                stock_indices=stock_indices,
+                stock_valid_mask=stock_valid_mask,
+            )
+            if self.use_ultra_short_branch:
+                ultra_short_features = self._encode_multi_scale_branch(
+                    src,
+                    self.ultra_short_windows,
+                    self.ultra_short_temporal_encoder,
+                    self.ultra_short_feature_attention,
+                    stock_indices=stock_indices,
+                    stock_valid_mask=stock_valid_mask,
+                )
+                short_features = self._fuse_short_horizon_features(
+                    ultra_short_features,
+                    base_short_features,
+                )
+            else:
+                short_features = base_short_features
+
+            long_features = self._encode_multi_scale_branch(
+                src,
+                self.long_windows,
+                self.long_temporal_encoder,
+                self.long_feature_attention,
+                stock_indices=stock_indices,
+                stock_valid_mask=stock_valid_mask,
+            )
+            aggregated_features = self._fuse_multi_scale_features(
+                aggregated_features,
+                short_features,
+                long_features,
+            )
         
         # 重塑回股票维度用于股票间交互
         stock_features = aggregated_features.view(batch_size, num_stocks, -1)  # [batch, num_stocks, d_model]

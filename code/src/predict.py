@@ -239,10 +239,27 @@ def main():
 		model.cross_stock_attention.mask_mode = 'similarity'
 	state_dict = torch.load(model_path, map_location=device)
 	load_result = model.load_state_dict(state_dict, strict=False)
-	compatible_prefixes = ('market_gate.', 'volatility_head.')
+	multi_scale_prefixes = (
+		'ultra_short_temporal_encoder.',
+		'ultra_short_feature_attention.',
+		'short_temporal_encoder.',
+		'long_temporal_encoder.',
+		'short_feature_attention.',
+		'long_feature_attention.',
+		'short_horizon_fusion_gate.',
+		'short_horizon_norm.',
+		'multi_scale_fusion_gate.',
+		'multi_scale_branch_norm.',
+	)
+	temporal_cross_stock_prefixes = (
+		'temporal_cross_stock_attention.',
+	)
+	compatible_prefixes = ('market_gate.', 'volatility_head.') + multi_scale_prefixes
+	compatible_prefixes = compatible_prefixes + temporal_cross_stock_prefixes
+	compatible_exact_keys = {'multi_scale_branch_logits'}
 	non_compatible_missing = [
 		k for k in load_result.missing_keys
-		if not k.startswith(compatible_prefixes)
+		if (k not in compatible_exact_keys) and (not k.startswith(compatible_prefixes))
 	]
 	if non_compatible_missing:
 		raise RuntimeError(f'模型参数缺失且无法兼容: {non_compatible_missing[:10]}')
@@ -252,6 +269,12 @@ def main():
 	if any(k.startswith('volatility_head.') for k in load_result.missing_keys):
 		print('检测到旧版checkpoint（缺少 volatility_head 参数），已自动关闭多任务辅助头')
 		model.use_multitask_volatility = False
+	if any((k == 'multi_scale_branch_logits') or k.startswith(multi_scale_prefixes) for k in load_result.missing_keys):
+		print('检测到旧版checkpoint（缺少 multi-scale 参数），已自动关闭多尺度时序分支')
+		model.use_multi_scale_temporal = False
+	if any(k.startswith(temporal_cross_stock_prefixes) for k in load_result.missing_keys):
+		print('检测到旧版checkpoint（缺少 temporal cross-stock 参数），已自动关闭时间步级跨股交互')
+		model.use_temporal_cross_stock_attention = False
 	if load_result.unexpected_keys:
 		print(f'模型包含额外参数（将忽略）: {load_result.unexpected_keys[:10]}')
 	model.to(device)
