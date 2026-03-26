@@ -13,6 +13,21 @@ from factor_store import (
 )
 
 
+def _parse_inputs_arg(raw_inputs):
+    if raw_inputs is None:
+        return None
+    raw_inputs = raw_inputs.strip()
+    if not raw_inputs:
+        return {}
+    try:
+        parsed = json.loads(raw_inputs)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f'--inputs 不是合法 JSON: {exc}') from exc
+    if not isinstance(parsed, dict):
+        raise ValueError('--inputs 必须是 JSON 对象，例如 {"input_price":"收盘","window":20}')
+    return parsed
+
+
 def _build_parser():
     parser = argparse.ArgumentParser(description='因子管理工具')
     parser.add_argument(
@@ -47,6 +62,8 @@ def _build_parser():
     create_parser.add_argument('--expression', required=True, help='因子表达式')
     create_parser.add_argument('--group', default='custom', help='因子分组')
     create_parser.add_argument('--description', default='', help='因子说明')
+    create_parser.add_argument('--inputs', default=None, help='输入映射(JSON)，例如 {"input_price":"收盘","window":20}')
+    create_parser.add_argument('--author', default=None, help='作者标识')
     create_parser.add_argument('--disabled', action='store_true', help='创建后默认关闭')
 
     update_parser = subparsers.add_parser('update', help='编辑自定义因子')
@@ -54,6 +71,8 @@ def _build_parser():
     update_parser.add_argument('--expression', required=True, help='新的因子表达式')
     update_parser.add_argument('--group', default='custom', help='因子分组')
     update_parser.add_argument('--description', default='', help='因子说明')
+    update_parser.add_argument('--inputs', default=None, help='输入映射(JSON)，例如 {"input_price":"收盘","window":20}')
+    update_parser.add_argument('--author', default=None, help='作者标识')
     update_parser.add_argument('--disabled', action='store_true', help='更新后关闭')
 
     delete_parser = subparsers.add_parser('delete', help='删除自定义因子')
@@ -73,6 +92,7 @@ def _print_factor_list(pipeline, enabled_only=False):
     print(
         f'feature_set={pipeline["feature_set"]} '
         f'active={pipeline["summary"]["active_total"]} '
+        f'cross={pipeline["summary"].get("cross_sectional_total", 0)} '
         f'builtin={pipeline["summary"]["builtin_enabled"]}/{pipeline["summary"]["builtin_total"]} '
         f'builtin_overridden={pipeline["summary"].get("builtin_overridden", 0)} '
         f'custom={pipeline["summary"]["custom_enabled"]}/{pipeline["summary"]["custom_total"]}'
@@ -106,6 +126,7 @@ def main():
         return
 
     if args.command == 'create':
+        inputs = _parse_inputs_arg(args.inputs)
         upsert_custom_factor(
             args.store_path,
             args.feature_set,
@@ -114,11 +135,14 @@ def main():
             group=args.group,
             description=args.description,
             enabled=not args.disabled,
+            inputs=inputs,
+            author=args.author,
         )
         print(f'已创建自定义因子: {args.name}')
         return
 
     if args.command == 'update':
+        inputs = _parse_inputs_arg(args.inputs)
         spec = get_factor_spec(args.feature_set, args.store_path, args.name)
         if spec.get('source') == 'custom':
             upsert_custom_factor(
@@ -129,6 +153,8 @@ def main():
                 group=args.group,
                 description=args.description,
                 enabled=not args.disabled,
+                inputs=inputs,
+                author=args.author,
             )
             print(f'已更新自定义因子: {args.name}')
             return
@@ -140,6 +166,8 @@ def main():
             args.expression,
             group=args.group,
             description=args.description,
+            inputs=inputs,
+            author=args.author,
         )
         if args.disabled:
             set_factor_enabled(args.store_path, args.feature_set, args.name, False)

@@ -1,6 +1,12 @@
+import ast
 import copy
+import hashlib
 import json
 import os
+import re
+import types
+from collections import defaultdict, deque
+from datetime import datetime, timezone
 from functools import lru_cache
 
 import numpy as np
@@ -18,6 +24,53 @@ FEATURE_ENGINEER_FUNC_MAP = {
     '39': engineer_features_39,
     '158+39': engineer_features_158plus39,
 }
+
+IDENTIFIER_PATTERN = re.compile(r'[A-Za-z_\u4e00-\u9fff][0-9A-Za-z_\u4e00-\u9fff]*')
+SAFE_NUMPY_CALLS = {
+    'abs': np.abs,
+    'clip': np.clip,
+    'exp': np.exp,
+    'log': np.log,
+    'log1p': np.log1p,
+    'maximum': np.maximum,
+    'minimum': np.minimum,
+    'nan_to_num': np.nan_to_num,
+    'power': np.power,
+    'sign': np.sign,
+    'sqrt': np.sqrt,
+    'where': np.where,
+}
+SAFE_NUMPY_CONSTANTS = {
+    'pi': float(np.pi),
+    'e': float(np.e),
+}
+SAFE_NUMPY_NAMESPACE = types.SimpleNamespace(**SAFE_NUMPY_CALLS, **SAFE_NUMPY_CONSTANTS)
+SAFE_NUMPY_ATTRS = set(SAFE_NUMPY_CALLS) | set(SAFE_NUMPY_CONSTANTS)
+EXPRESSION_RESERVED_NAMES = {'True', 'False', 'None'}
+CROSS_SECTIONAL_HELPER_NAMES = {'cs_rank', 'cs_zscore'}
+SAFE_OBJECT_METHOD_CALLS = {'astype'}
+SAFE_LITERAL_TYPES = {
+    'float': float,
+    'int': int,
+    'bool': bool,
+}
+
+
+def _utc_now_iso():
+    return datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
+
+
+def _normalize_factor_inputs(raw_inputs):
+    if raw_inputs is None:
+        return {}
+    if not isinstance(raw_inputs, dict):
+        raise ValueError(f'inputs 必须为对象(dict)，当前类型: {type(raw_inputs).__name__}')
+    normalized = {}
+    for key, value in raw_inputs.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError(f'inputs 的 key 必须是非空字符串，当前: {key!r}')
+        normalized[key] = value
+    return normalized
 
 
 def _default_feature_set_config():
@@ -104,7 +157,7 @@ def _get_feature_set_config(store, feature_set):
 def _build_builtin_specs(feature_set, disabled_builtin_factors):
     disabled_set = set(disabled_builtin_factors)
     builtin_specs = []
-    for spec in BUILTIN_FACTOR_SPECS_MAP[feature_set]:
+    for spec in get_builtin_specs(feature_set):
         current = dict(spec)
         current['enabled'] = current['name'] not in disabled_set
         builtin_specs.append(current)
@@ -119,7 +172,14 @@ def _normalize_custom_factor_spec(spec):
         'enabled': bool(spec.get('enabled', True)),
         'expression': spec['expression'],
         'description': spec.get('description', ''),
+        'inputs': _normalize_factor_inputs(spec.get('inputs', {})),
     }
+    if spec.get('created_at'):
+        normalized['created_at'] = spec['created_at']
+    if spec.get('updated_at'):
+        normalized['updated_at'] = spec['updated_at']
+    if spec.get('author'):
+        normalized['author'] = spec['author']
     return normalized
 
 
@@ -130,6 +190,7 @@ def _validate_custom_factor_specs(custom_specs, builtin_names):
             raise ValueError('自定义因子缺少 name')
         if not spec.get('expression'):
             raise ValueError(f'自定义因子 {spec["name"]} 缺少 expression')
+        _normalize_factor_inputs(spec.get('inputs', {}))
         if spec['name'] in seen:
             raise ValueError(f'因子名称重复: {spec["name"]}')
         seen.add(spec['name'])
@@ -151,12 +212,38 @@ def _apply_builtin_overrides(builtin_specs, builtin_overrides):
 
         override = overrides_map.get(current['name'])
         if override is not None:
-            for field in ('expression', 'description', 'group'):
+            for field in ('expression', 'description', 'group', 'inputs'):
                 if field in override:
                     current[field] = override[field]
+            for meta_field in ('created_at', 'updated_at', 'author'):
+                if meta_field in override:
+                    current[meta_field] = override[meta_field]
             current['overridden'] = True
         resolved_specs.append(current)
     return resolved_specs
+
+
+def _compute_factor_fingerprint(feature_set, specs):
+    serializable_specs = []
+    for spec in specs:
+        serializable_specs.append({
+            'name': spec.get('name'),
+            'group': spec.get('group', ''),
+            'source': spec.get('source', ''),
+            'expression': spec.get('expression', ''),
+            'inputs': _normalize_factor_inputs(spec.get('inputs', {})),
+            'enabled': bool(spec.get('enabled', True)),
+        })
+    payload = json.dumps(
+        {
+            'feature_set': feature_set,
+            'specs': serializable_specs,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(',', ':'),
+    ).encode('utf-8')
+    return hashlib.sha256(payload).hexdigest()[:16]
 
 
 def resolve_factor_pipeline(feature_set, store_path, builtin_registry_path=DEFAULT_BUILTIN_FACTOR_REGISTRY_PATH):
@@ -172,6 +259,7 @@ def resolve_factor_pipeline(feature_set, store_path, builtin_registry_path=DEFAU
     disabled_set = set(feature_set_config.get('disabled_builtin_factors', []))
     for spec in builtin_specs:
         spec['enabled'] = spec['name'] not in disabled_set
+        spec['inputs'] = _normalize_factor_inputs(spec.get('inputs', {}))
     builtin_names = [spec['name'] for spec in builtin_specs]
 
     custom_specs = [
@@ -182,6 +270,7 @@ def resolve_factor_pipeline(feature_set, store_path, builtin_registry_path=DEFAU
 
     all_specs = builtin_specs + custom_specs
     active_specs = [spec for spec in all_specs if spec.get('enabled', True)]
+    execution_plan = build_factor_execution_plan(active_specs, error_prefix='因子')
     active_feature_names = [spec['name'] for spec in active_specs]
     group_counts = {}
     for spec in active_specs:
@@ -198,7 +287,13 @@ def resolve_factor_pipeline(feature_set, store_path, builtin_registry_path=DEFAU
         'custom_specs': custom_specs,
         'all_specs': all_specs,
         'active_specs': active_specs,
+        'ordered_specs': execution_plan['ordered_specs'],
+        'time_series_specs': execution_plan['time_series_specs'],
+        'cross_sectional_specs': execution_plan['cross_sectional_specs'],
+        'dependency_graph': execution_plan['dependency_graph'],
         'active_features': active_feature_names,
+        'factor_fingerprint': _compute_factor_fingerprint(feature_set, execution_plan['ordered_specs']),
+        'snapshot_meta': {},
         'summary': {
             'builtin_total': len(builtin_specs),
             'builtin_enabled': sum(1 for spec in builtin_specs if spec['enabled']),
@@ -206,6 +301,7 @@ def resolve_factor_pipeline(feature_set, store_path, builtin_registry_path=DEFAU
             'custom_total': len(custom_specs),
             'custom_enabled': sum(1 for spec in custom_specs if spec['enabled']),
             'active_total': len(active_feature_names),
+            'cross_sectional_total': len(execution_plan['cross_sectional_specs']),
             'group_counts': group_counts,
         },
     }
@@ -708,26 +804,505 @@ EXPRESSION_HELPERS = {
     'max_daily_return': _helper_max_daily_return,
     'normalized_ma_momentum': _helper_normalized_ma_momentum,
     'chaikin_volatility': _helper_chaikin_volatility,
-    'np': np,
+    'np': SAFE_NUMPY_NAMESPACE,
 }
 
 
-def apply_factor_expressions(df, factor_specs, error_prefix='因子'):
+TIME_SERIES_STATEFUL_HELPERS = {
+    'shift',
+    'diff',
+    'delta',
+    'pct_change',
+    'sma',
+    'ema',
+    'rolling_mean',
+    'rolling_std',
+    'rolling_min',
+    'rolling_max',
+    'rolling_sum',
+    'rolling_skew',
+    'rolling_quantile',
+    'rank_pct',
+    'zscore',
+    'argmax_ratio',
+    'argmin_ratio',
+    'argmax_minus_argmin_ratio',
+    'rolling_corr',
+    'linearreg_slope',
+    'linearreg_rsquare',
+    'linearreg_residual',
+    'direction_up_rate',
+    'direction_down_rate',
+    'direction_balance_rate',
+    'diff_up_ratio',
+    'diff_down_ratio',
+    'diff_balance_ratio',
+    'vol_weighted_volatility',
+    'rsi',
+    'macd_line',
+    'macd_signal',
+    'obv',
+    'atr',
+    'boll_mid',
+    'boll_std',
+    'kdj_k',
+    'kdj_d',
+    'tema',
+    'cci',
+    'mfi',
+    'ad_line',
+    'chaikin_osc',
+    'adx',
+    'aroon_osc',
+    'cmo',
+    'psy',
+    'bbi',
+    'pvt',
+    'emv',
+    'imi',
+    'vhf',
+    'price_deviation',
+    'max_daily_return',
+    'normalized_ma_momentum',
+    'chaikin_volatility',
+}
+ALLOWED_FUNCTION_CALLS = (set(EXPRESSION_HELPERS) - {'np'}) | CROSS_SECTIONAL_HELPER_NAMES
+
+
+class _SafeExpressionValidator(ast.NodeVisitor):
+    ALLOWED_NODES = (
+        ast.Expression,
+        ast.BinOp,
+        ast.UnaryOp,
+        ast.BoolOp,
+        ast.Compare,
+        ast.Call,
+        ast.Name,
+        ast.Load,
+        ast.Constant,
+        ast.Attribute,
+        ast.IfExp,
+        ast.List,
+        ast.Tuple,
+        ast.Dict,
+        ast.Set,
+        ast.Subscript,
+        ast.Slice,
+        ast.keyword,
+        ast.Add,
+        ast.Sub,
+        ast.Mult,
+        ast.Div,
+        ast.FloorDiv,
+        ast.Mod,
+        ast.Pow,
+        ast.USub,
+        ast.UAdd,
+        ast.Not,
+        ast.And,
+        ast.Or,
+        ast.Eq,
+        ast.NotEq,
+        ast.Lt,
+        ast.LtE,
+        ast.Gt,
+        ast.GtE,
+        ast.In,
+        ast.NotIn,
+    )
+
+    def generic_visit(self, node):
+        if not isinstance(node, self.ALLOWED_NODES):
+            raise ValueError(f'表达式包含不允许的语法节点: {type(node).__name__}')
+        return super().generic_visit(node)
+
+    def visit_Name(self, node):
+        if node.id.startswith('__'):
+            raise ValueError(f'表达式包含不安全名称: {node.id}')
+        return self.generic_visit(node)
+
+    def visit_Attribute(self, node):
+        if (
+            not isinstance(node.value, ast.Name)
+            or node.value.id != 'np'
+            or node.attr.startswith('_')
+            or node.attr not in SAFE_NUMPY_ATTRS
+        ):
+            raise ValueError('仅允许使用白名单 np 函数/常量')
+        self.visit(node.value)
+
+    def visit_Call(self, node):
+        if isinstance(node.func, ast.Name):
+            if node.func.id not in ALLOWED_FUNCTION_CALLS:
+                raise ValueError(f'表达式调用了未授权函数: {node.func.id}')
+        elif isinstance(node.func, ast.Attribute):
+            if isinstance(node.func.value, ast.Name) and node.func.value.id == 'np':
+                if node.func.attr not in SAFE_NUMPY_ATTRS or node.func.attr.startswith('_'):
+                    raise ValueError('仅允许使用白名单 np 函数/常量')
+                self.visit(node.func.value)
+            elif node.func.attr in SAFE_OBJECT_METHOD_CALLS:
+                self.visit(node.func.value)
+            else:
+                raise ValueError('仅允许调用白名单方法')
+        else:
+            raise ValueError('表达式函数调用格式不受支持')
+
+        for arg in node.args:
+            self.visit(arg)
+        for kw in node.keywords:
+            if kw.arg is None:
+                raise ValueError('不允许 **kwargs 展开')
+            self.visit(kw.value)
+
+
+class _ExpressionSymbolCollector(ast.NodeVisitor):
+    def __init__(self):
+        self.variable_names = set()
+        self.called_functions = set()
+        self.called_numpy_functions = set()
+
+    def visit_Call(self, node):
+        if isinstance(node.func, ast.Name):
+            self.called_functions.add(node.func.id)
+        elif isinstance(node.func, ast.Attribute):
+            if isinstance(node.func.value, ast.Name) and node.func.value.id == 'np':
+                self.called_numpy_functions.add(node.func.attr)
+        for arg in node.args:
+            self.visit(arg)
+        for kw in node.keywords:
+            self.visit(kw.value)
+
+    def visit_Name(self, node):
+        self.variable_names.add(node.id)
+
+    def visit_Attribute(self, node):
+        if isinstance(node.value, ast.Name) and node.value.id == 'np':
+            return
+        self.generic_visit(node)
+
+
+@lru_cache(maxsize=4096)
+def _compile_expression(expression):
+    try:
+        tree = ast.parse(expression, mode='eval')
+    except SyntaxError as exc:
+        raise ValueError(f'表达式语法错误: {exc}') from exc
+
+    _SafeExpressionValidator().visit(tree)
+    collector = _ExpressionSymbolCollector()
+    collector.visit(tree)
+
+    regex_identifiers = set(IDENTIFIER_PATTERN.findall(expression))
+    variable_names = set(collector.variable_names)
+    variable_names.update(regex_identifiers)
+    variable_names.difference_update(collector.called_functions)
+    variable_names.difference_update(SAFE_OBJECT_METHOD_CALLS)
+    variable_names.difference_update(SAFE_NUMPY_ATTRS)
+    variable_names.difference_update(EXPRESSION_RESERVED_NAMES)
+    variable_names.discard('np')
+
+    code = compile(tree, '<factor_expression>', mode='eval')
+    return {
+        'code': code,
+        'variable_names': frozenset(variable_names),
+        'called_functions': frozenset(collector.called_functions),
+        'called_numpy_functions': frozenset(collector.called_numpy_functions),
+    }
+
+
+def _as_cache_key(value):
+    if isinstance(value, pd.Series):
+        return ('series', id(value), value.name)
+    if isinstance(value, np.ndarray):
+        return ('ndarray', id(value), value.shape)
+    if np.isscalar(value):
+        return ('scalar', value)
+    if isinstance(value, (list, tuple)):
+        return (type(value).__name__, tuple(_as_cache_key(item) for item in value))
+    if isinstance(value, dict):
+        return ('dict', tuple(sorted((k, _as_cache_key(v)) for k, v in value.items())))
+    return ('object', id(value))
+
+
+def _build_cached_helper(name, helper_fn, middleware_cache):
+    if not callable(helper_fn):
+        return helper_fn
+
+    def _wrapped(*args, **kwargs):
+        key = (
+            name,
+            tuple(_as_cache_key(arg) for arg in args),
+            tuple(sorted((k, _as_cache_key(v)) for k, v in kwargs.items())),
+        )
+        if key in middleware_cache:
+            return middleware_cache[key]
+        out = helper_fn(*args, **kwargs)
+        middleware_cache[key] = out
+        return out
+
+    return _wrapped
+
+
+def _build_cross_sectional_helpers(df, date_col, middleware_cache):
+    if date_col not in df.columns:
+        return {}
+
+    date_series = df[date_col]
+
+    def _cs_rank(x):
+        series = _as_series(x, df.index)
+        key = ('cs_rank', _as_cache_key(series))
+        if key in middleware_cache:
+            return middleware_cache[key]
+        ranked = series.groupby(date_series).rank(pct=True)
+        middleware_cache[key] = ranked
+        return ranked
+
+    def _cs_zscore(x):
+        series = _as_series(x, df.index)
+        key = ('cs_zscore', _as_cache_key(series))
+        if key in middleware_cache:
+            return middleware_cache[key]
+        grouped = series.groupby(date_series)
+        mean = grouped.transform('mean')
+        std = grouped.transform('std').replace(0.0, np.nan)
+        z = (series - mean) / (std + 1e-12)
+        middleware_cache[key] = z
+        return z
+
+    return {
+        'cs_rank': _cs_rank,
+        'cs_zscore': _cs_zscore,
+    }
+
+
+def _build_runtime_helpers(df, date_col, middleware_cache):
+    helper_env = {}
+    for name, helper in EXPRESSION_HELPERS.items():
+        helper_env[name] = _build_cached_helper(name, helper, middleware_cache)
+    helper_env.update(SAFE_LITERAL_TYPES)
+    helper_env.update(_build_cross_sectional_helpers(df, date_col, middleware_cache))
+    return helper_env
+
+
+def _extract_input_dependencies(raw_value):
+    if isinstance(raw_value, str):
+        text = raw_value.strip()
+        if not text:
+            return set()
+        try:
+            parsed = ast.literal_eval(text)
+        except Exception:
+            parsed = None
+        if parsed is not None:
+            if isinstance(parsed, str):
+                return set()
+            return set()
+        return set(IDENTIFIER_PATTERN.findall(text))
+
+    if isinstance(raw_value, (list, tuple, set)):
+        out = set()
+        for item in raw_value:
+            out.update(_extract_input_dependencies(item))
+        return out
+
+    if isinstance(raw_value, dict):
+        out = set()
+        for value in raw_value.values():
+            out.update(_extract_input_dependencies(value))
+        return out
+
+    return set()
+
+
+def _normalize_execution_spec(spec):
+    normalized = dict(spec)
+    normalized['inputs'] = _normalize_factor_inputs(normalized.get('inputs', {}))
+    return normalized
+
+
+def build_factor_execution_plan(factor_specs, error_prefix='因子'):
+    if not factor_specs:
+        return {
+            'ordered_specs': [],
+            'time_series_specs': [],
+            'cross_sectional_specs': [],
+            'dependency_graph': {},
+        }
+
+    normalized_specs = [_normalize_execution_spec(spec) for spec in factor_specs]
+    factor_names = {spec['name'] for spec in normalized_specs}
+
+    prepared_specs = []
+    for order_idx, spec in enumerate(normalized_specs):
+        if not spec.get('name'):
+            raise ValueError(f'{error_prefix} 存在缺少 name 的因子定义')
+        if not spec.get('expression'):
+            raise ValueError(f'{error_prefix} {spec["name"]} 缺少 expression')
+        compile_meta = _compile_expression(spec['expression'])
+        variable_names = set(compile_meta['variable_names'])
+        inputs = spec.get('inputs', {})
+
+        referenced_symbols = set()
+        used_input_aliases = {alias for alias in inputs if alias in variable_names}
+        for alias in used_input_aliases:
+            referenced_symbols.update(_extract_input_dependencies(inputs[alias]))
+
+        referenced_symbols.update(variable_names - used_input_aliases)
+        referenced_symbols.difference_update(EXPRESSION_RESERVED_NAMES)
+        referenced_symbols.discard('np')
+        referenced_symbols.difference_update(set(EXPRESSION_HELPERS))
+        referenced_symbols.difference_update(set(SAFE_LITERAL_TYPES))
+        dependencies = sorted((referenced_symbols & factor_names) - {spec['name']})
+
+        called_functions = set(compile_meta['called_functions'])
+        uses_cross_sectional = bool(called_functions & CROSS_SECTIONAL_HELPER_NAMES)
+        uses_stateful_ts = bool(called_functions & TIME_SERIES_STATEFUL_HELPERS)
+
+        enriched = dict(spec)
+        enriched.update({
+            '_order': order_idx,
+            '_dependencies': dependencies,
+            '_called_functions': sorted(called_functions),
+            '_uses_cross_sectional_helper': uses_cross_sectional,
+            '_uses_stateful_ts_helper': uses_stateful_ts,
+        })
+        prepared_specs.append(enriched)
+
+    name_to_spec = {spec['name']: spec for spec in prepared_specs}
+    in_degree = {spec['name']: len(spec['_dependencies']) for spec in prepared_specs}
+    forward_edges = defaultdict(set)
+    for spec in prepared_specs:
+        for dep_name in spec['_dependencies']:
+            forward_edges[dep_name].add(spec['name'])
+
+    ready = deque(
+        sorted(
+            [name for name, degree in in_degree.items() if degree == 0],
+            key=lambda n: name_to_spec[n]['_order'],
+        )
+    )
+    ordered_names = []
+    while ready:
+        current = ready.popleft()
+        ordered_names.append(current)
+        next_nodes = sorted(
+            forward_edges.get(current, []),
+            key=lambda n: name_to_spec[n]['_order'],
+        )
+        for nxt in next_nodes:
+            in_degree[nxt] -= 1
+            if in_degree[nxt] == 0:
+                ready.append(nxt)
+
+    if len(ordered_names) != len(prepared_specs):
+        cycle_nodes = sorted([name for name, degree in in_degree.items() if degree > 0])
+        raise ValueError(f'{error_prefix} 存在循环依赖: {cycle_nodes}')
+
+    ordered_specs = []
+    cs_names = set()
+    for exec_idx, name in enumerate(ordered_names):
+        spec = dict(name_to_spec[name])
+        is_cross_sectional = spec['_uses_cross_sectional_helper'] or any(
+            dep in cs_names for dep in spec['_dependencies']
+        )
+
+        if is_cross_sectional and spec['_uses_stateful_ts_helper']:
+            raise ValueError(
+                f'{error_prefix} {spec["name"]} 在截面阶段调用了时序函数，'
+                f'请先拆分为时序因子再做 cs_* 计算。'
+            )
+
+        if is_cross_sectional:
+            cs_names.add(spec['name'])
+
+        spec['execution_order'] = exec_idx
+        spec['dependencies'] = list(spec['_dependencies'])
+        spec['is_cross_sectional'] = bool(is_cross_sectional)
+        spec['called_functions'] = list(spec['_called_functions'])
+
+        for transient_key in (
+            '_order',
+            '_dependencies',
+            '_called_functions',
+            '_uses_cross_sectional_helper',
+            '_uses_stateful_ts_helper',
+        ):
+            spec.pop(transient_key, None)
+        ordered_specs.append(spec)
+
+    return {
+        'ordered_specs': ordered_specs,
+        'time_series_specs': [spec for spec in ordered_specs if not spec.get('is_cross_sectional')],
+        'cross_sectional_specs': [spec for spec in ordered_specs if spec.get('is_cross_sectional')],
+        'dependency_graph': {
+            spec['name']: list(spec.get('dependencies', []))
+            for spec in ordered_specs
+        },
+    }
+
+
+def _resolve_input_value(raw_value, runtime_env):
+    if not isinstance(raw_value, str):
+        return raw_value
+
+    text = raw_value.strip()
+    if text in runtime_env:
+        return runtime_env[text]
+
+    try:
+        return ast.literal_eval(text)
+    except Exception:
+        return raw_value
+
+
+def _build_inputs_env(spec, runtime_env):
+    inputs = _normalize_factor_inputs(spec.get('inputs', {}))
+    return {
+        alias: _resolve_input_value(raw_value, runtime_env)
+        for alias, raw_value in inputs.items()
+    }
+
+
+def apply_factor_expressions(df, factor_specs, error_prefix='因子', date_col='日期'):
     if not factor_specs:
         return df
 
+    if any(spec.get('is_cross_sectional') for spec in factor_specs) and date_col not in df.columns:
+        raise ValueError(f'{error_prefix} 需要日期列 `{date_col}` 才能计算截面因子')
+
+    if all('execution_order' in spec for spec in factor_specs):
+        execution_specs = [_normalize_execution_spec(spec) for spec in factor_specs]
+    else:
+        execution_specs = build_factor_execution_plan(factor_specs, error_prefix=error_prefix)['ordered_specs']
+
     df = df.copy()
-    for spec in factor_specs:
-        local_env = {column: df[column] for column in df.columns}
-        local_env.update(EXPRESSION_HELPERS)
+    runtime_env = {column: df[column] for column in df.columns}
+    middleware_cache = {}
+    helper_env = _build_runtime_helpers(df, date_col, middleware_cache)
+    computed_columns = {}
+
+    for spec in execution_specs:
+        local_env = dict(runtime_env)
+        local_env.update(helper_env)
+        local_env.update(_build_inputs_env(spec, runtime_env))
+        compile_meta = _compile_expression(spec['expression'])
         try:
-            value = eval(spec['expression'], {'__builtins__': {}}, local_env)
+            value = eval(compile_meta['code'], {'__builtins__': {}}, local_env)
         except Exception as exc:
             raise ValueError(
                 f'{error_prefix} {spec["name"]} 计算失败: {exc}. expression={spec["expression"]}'
             ) from exc
 
-        df[spec['name']] = _as_series(value, df.index).astype(np.float32)
+        series_value = _as_series(value, df.index).astype(np.float32)
+        computed_columns[spec['name']] = series_value
+        runtime_env[spec['name']] = series_value
+
+    if computed_columns:
+        replace_names = [name for name in computed_columns if name in df.columns]
+        if replace_names:
+            df = df.drop(columns=replace_names)
+        df = pd.concat([df, pd.DataFrame(computed_columns, index=df.index)], axis=1)
 
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
     df.fillna(0, inplace=True)
@@ -744,11 +1319,29 @@ def apply_custom_factors(df, custom_factor_specs):
 
 
 def engineer_group_features(task):
-    group, feature_set, builtin_override_specs, custom_factor_specs = task
+    if isinstance(task, dict):
+        group = task['group']
+        feature_set = task['feature_set']
+        factor_specs = task.get('factor_specs', [])
+    elif len(task) == 3:
+        group, feature_set, factor_specs = task
+    elif len(task) == 4:
+        group, feature_set, builtin_override_specs, custom_factor_specs = task
+        legacy_specs = [spec for spec in builtin_override_specs if spec.get('overridden')]
+        legacy_specs.extend(custom_factor_specs)
+        factor_specs = build_factor_execution_plan(legacy_specs, error_prefix='因子')['time_series_specs']
+    else:
+        raise ValueError('engineer_group_features 任务参数不合法')
+
     engineer = FEATURE_ENGINEER_FUNC_MAP[feature_set]
     processed = engineer(group.copy())
-    processed = apply_builtin_overrides(processed, builtin_override_specs)
-    processed = apply_custom_factors(processed, custom_factor_specs)
+    factor_specs = [spec for spec in factor_specs if not spec.get('is_cross_sectional')]
+    processed = apply_factor_expressions(
+        processed,
+        factor_specs,
+        error_prefix='时序因子',
+        date_col='日期',
+    )
     return processed
 
 
@@ -792,12 +1385,18 @@ def upsert_custom_factor(
     group='custom',
     description='',
     enabled=True,
+    inputs=None,
+    author=None,
 ):
     store = load_factor_store(store_path)
     feature_set_config = _get_feature_set_config(store, feature_set)
-    builtin_names = {spec['name'] for spec in BUILTIN_FACTOR_SPECS_MAP[feature_set]}
+    builtin_names = {spec['name'] for spec in get_builtin_specs(feature_set)}
     if factor_name in builtin_names:
         raise ValueError(f'内置因子不能被覆盖: {factor_name}')
+
+    now = _utc_now_iso()
+    resolved_author = (author or os.environ.get('USER') or '').strip()
+    normalized_inputs = None if inputs is None else _normalize_factor_inputs(inputs)
 
     custom_factors = feature_set_config.setdefault('custom_factors', [])
     for spec in custom_factors:
@@ -806,6 +1405,16 @@ def upsert_custom_factor(
             spec['group'] = group
             spec['description'] = description
             spec['enabled'] = bool(enabled)
+            if normalized_inputs is not None:
+                spec['inputs'] = normalized_inputs
+            else:
+                spec.setdefault('inputs', {})
+            spec['created_at'] = spec.get('created_at') or now
+            spec['updated_at'] = now
+            if resolved_author:
+                spec['author'] = resolved_author
+            elif spec.get('author') is None:
+                spec['author'] = ''
             save_factor_store(store, store_path)
             return
 
@@ -815,6 +1424,10 @@ def upsert_custom_factor(
         'group': group,
         'description': description,
         'enabled': bool(enabled),
+        'inputs': normalized_inputs if normalized_inputs is not None else {},
+        'created_at': now,
+        'updated_at': now,
+        'author': resolved_author,
     })
     save_factor_store(store, store_path)
 
@@ -837,12 +1450,18 @@ def upsert_builtin_override(
     expression,
     group=None,
     description=None,
+    inputs=None,
+    author=None,
 ):
     store = load_factor_store(store_path)
     feature_set_config = _get_feature_set_config(store, feature_set)
     builtin_names = {spec['name'] for spec in get_builtin_specs(feature_set)}
     if factor_name not in builtin_names:
         raise ValueError(f'未找到内置因子: {factor_name}')
+
+    now = _utc_now_iso()
+    resolved_author = (author or os.environ.get('USER') or '').strip()
+    normalized_inputs = None if inputs is None else _normalize_factor_inputs(inputs)
 
     builtin_overrides = feature_set_config.setdefault('builtin_overrides', [])
     for spec in builtin_overrides:
@@ -852,12 +1471,26 @@ def upsert_builtin_override(
                 spec['group'] = group
             if description is not None:
                 spec['description'] = description
+            if normalized_inputs is not None:
+                spec['inputs'] = normalized_inputs
+            else:
+                spec.setdefault('inputs', {})
+            spec['created_at'] = spec.get('created_at') or now
+            spec['updated_at'] = now
+            if resolved_author:
+                spec['author'] = resolved_author
+            elif spec.get('author') is None:
+                spec['author'] = ''
             save_factor_store(store, store_path)
             return
 
     new_spec = {
         'name': factor_name,
         'expression': expression,
+        'inputs': normalized_inputs if normalized_inputs is not None else {},
+        'created_at': now,
+        'updated_at': now,
+        'author': resolved_author,
     }
     if group is not None:
         new_spec['group'] = group
@@ -879,7 +1512,12 @@ def clear_builtin_override(store_path, feature_set, factor_name):
 
 
 def build_factor_snapshot(pipeline):
-    return {
+    active_specs_for_hash = pipeline.get('ordered_specs') or pipeline.get('active_specs', [])
+    factor_fingerprint = pipeline.get('factor_fingerprint') or _compute_factor_fingerprint(
+        pipeline['feature_set'],
+        active_specs_for_hash,
+    )
+    snapshot = {
         'feature_set': pipeline['feature_set'],
         'store_path': pipeline['store_path'],
         'builtin_registry_path': pipeline.get('builtin_registry_path', DEFAULT_BUILTIN_FACTOR_REGISTRY_PATH),
@@ -887,13 +1525,21 @@ def build_factor_snapshot(pipeline):
         'active_features': pipeline['active_features'],
         'builtin_specs': pipeline['builtin_specs'],
         'custom_specs': pipeline['custom_specs'],
+        'dependency_graph': pipeline.get('dependency_graph', {}),
+        'factor_fingerprint': factor_fingerprint,
+        'snapshot': {
+            'created_at': _utc_now_iso(),
+            'factor_fingerprint': factor_fingerprint,
+        },
     }
+    return snapshot
 
 
 def save_factor_snapshot(pipeline, output_path):
     snapshot = build_factor_snapshot(pipeline)
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(snapshot, f, indent=2, ensure_ascii=False)
+    return snapshot
 
 
 def load_factor_snapshot(snapshot_path):
@@ -904,13 +1550,16 @@ def load_factor_snapshot(snapshot_path):
     if feature_set not in FEATURE_ENGINEER_FUNC_MAP:
         raise ValueError(f'快照中的 feature_set 不支持: {feature_set}')
 
-    builtin_specs = snapshot.get('builtin_specs', [])
+    builtin_specs = [dict(spec) for spec in snapshot.get('builtin_specs', [])]
+    for spec in builtin_specs:
+        spec['inputs'] = _normalize_factor_inputs(spec.get('inputs', {}))
     custom_specs = [
         _normalize_custom_factor_spec(spec)
         for spec in snapshot.get('custom_specs', [])
     ]
     all_specs = builtin_specs + custom_specs
     active_specs = [spec for spec in all_specs if spec.get('enabled', True)]
+    execution_plan = build_factor_execution_plan(active_specs, error_prefix='快照因子')
     active_features = snapshot.get('active_features', [spec['name'] for spec in active_specs])
     summary = snapshot.get('summary', {
         'builtin_total': len(builtin_specs),
@@ -919,8 +1568,15 @@ def load_factor_snapshot(snapshot_path):
         'custom_total': len(custom_specs),
         'custom_enabled': sum(1 for spec in custom_specs if spec.get('enabled', True)),
         'active_total': len(active_features),
+        'cross_sectional_total': len(execution_plan['cross_sectional_specs']),
         'group_counts': {},
     })
+    summary.setdefault('cross_sectional_total', len(execution_plan['cross_sectional_specs']))
+
+    factor_fingerprint = snapshot.get('factor_fingerprint') or _compute_factor_fingerprint(
+        feature_set,
+        execution_plan['ordered_specs'],
+    )
 
     return {
         'feature_set': feature_set,
@@ -932,6 +1588,12 @@ def load_factor_snapshot(snapshot_path):
         'custom_specs': custom_specs,
         'all_specs': all_specs,
         'active_specs': active_specs,
+        'ordered_specs': execution_plan['ordered_specs'],
+        'time_series_specs': execution_plan['time_series_specs'],
+        'cross_sectional_specs': execution_plan['cross_sectional_specs'],
+        'dependency_graph': snapshot.get('dependency_graph', execution_plan['dependency_graph']),
         'active_features': active_features,
+        'factor_fingerprint': factor_fingerprint,
+        'snapshot_meta': snapshot.get('snapshot', {}),
         'summary': summary,
     }

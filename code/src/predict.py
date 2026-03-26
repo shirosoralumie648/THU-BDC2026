@@ -9,6 +9,7 @@ import torch
 from tqdm import tqdm
 
 from config import config
+from factor_store import apply_factor_expressions
 from factor_store import engineer_group_features
 from factor_store import load_factor_snapshot
 from factor_store import resolve_factor_pipeline
@@ -25,7 +26,12 @@ from utils import resolve_feature_indices
 
 def preprocess_predict_data(df, stockid2idx, feature_pipeline):
 	feature_columns = feature_pipeline['active_features']
-	builtin_override_specs = feature_pipeline.get('builtin_override_specs', [])
+	time_series_specs = feature_pipeline.get('time_series_specs')
+	if time_series_specs is None:
+		legacy_specs = [spec for spec in feature_pipeline.get('builtin_override_specs', []) if spec.get('overridden')]
+		legacy_specs.extend(feature_pipeline.get('custom_specs', []))
+		time_series_specs = legacy_specs
+	cross_sectional_specs = feature_pipeline.get('cross_sectional_specs', [])
 
 	df = df.copy()
 	df = df.sort_values(['股票代码', '日期']).reset_index(drop=True)
@@ -36,12 +42,20 @@ def preprocess_predict_data(df, stockid2idx, feature_pipeline):
 	num_processes = min(int(config.get('feature_engineer_processes', 4)), mp.cpu_count())
 	with mp.Pool(processes=num_processes) as pool:
 		tasks = [
-			(group, feature_pipeline['feature_set'], builtin_override_specs, feature_pipeline['custom_specs'])
+			(group, feature_pipeline['feature_set'], time_series_specs)
 			for group in groups
 		]
 		processed_list = list(tqdm(pool.imap(engineer_group_features, tasks), total=len(groups), desc='预测集特征工程'))
 
 	processed = pd.concat(processed_list).reset_index(drop=True)
+	if cross_sectional_specs:
+		processed = processed.sort_values(['日期', '股票代码']).reset_index(drop=True)
+		processed = apply_factor_expressions(
+			processed,
+			cross_sectional_specs,
+			error_prefix='截面因子',
+			date_col='日期',
+		)
 	processed['instrument'] = processed['股票代码'].map(stockid2idx)
 	processed = processed.dropna(subset=['instrument']).copy()
 	processed['instrument'] = processed['instrument'].astype(np.int64)
@@ -229,7 +243,10 @@ def main():
 			print('未构建到有效行业映射，行业虚拟股将回退为空映射。')
 	if os.path.exists(factor_snapshot_path):
 		feature_pipeline = load_factor_snapshot(factor_snapshot_path)
-		print(f'加载训练因子快照: {factor_snapshot_path}')
+		print(
+			f'加载训练因子快照: {factor_snapshot_path} | '
+			f'fingerprint={feature_pipeline.get("factor_fingerprint", "")}'
+		)
 	else:
 		feature_pipeline = resolve_factor_pipeline(
 			config['feature_num'],

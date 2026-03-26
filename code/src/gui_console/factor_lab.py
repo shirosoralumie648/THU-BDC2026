@@ -91,32 +91,33 @@ def _compute_factor_distribution(
 ) -> pd.DataFrame:
     sample = _load_sample_frame(source_path, max_stocks, max_rows_per_stock)
     pipeline = resolve_factor_pipeline(feature_set, store_path, config['builtin_factor_registry_path'])
-    target_spec = None
-    for spec in pipeline['all_specs']:
-        if spec['name'] == factor_name:
-            target_spec = spec
-            break
-    if target_spec is None:
+    if factor_name not in {spec['name'] for spec in pipeline['all_specs']}:
         raise ValueError(f'未找到因子: {factor_name}')
 
     grouped = []
     for _, g in sample.groupby('股票代码', sort=False):
         local = g.sort_values('日期').copy()
-        try:
-            local = apply_factor_expressions(local, [target_spec], error_prefix='分布分析')
-        except Exception:
-            local = engineer_group_features(
-                (local, feature_set, pipeline['builtin_override_specs'], pipeline['custom_specs'])
-            )
-
-        if factor_name not in local.columns:
-            continue
-        grouped.append(local[['日期', '股票代码', factor_name]].copy())
+        local = engineer_group_features(
+            (local, feature_set, pipeline.get('time_series_specs', []))
+        )
+        grouped.append(local)
 
     if not grouped:
         raise ValueError('未计算到有效因子值，请检查因子表达式。')
 
     result = pd.concat(grouped, ignore_index=True)
+    if pipeline.get('cross_sectional_specs'):
+        result = result.sort_values(['日期', '股票代码']).reset_index(drop=True)
+        result = apply_factor_expressions(
+            result,
+            pipeline['cross_sectional_specs'],
+            error_prefix='分布分析',
+            date_col='日期',
+        )
+
+    if factor_name not in result.columns:
+        raise ValueError(f'因子计算完成但列不存在: {factor_name}')
+
     result = result.rename(columns={factor_name: 'raw_value'})
     result['raw_value'] = pd.to_numeric(result['raw_value'], errors='coerce')
     result = result.dropna(subset=['raw_value']).copy()

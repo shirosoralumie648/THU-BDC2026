@@ -258,6 +258,20 @@ sh factor.sh update gap_open_prev_close \
   --expression "(开盘 / (shift(收盘, 1) + 1e-12)) - 1"
 ```
 
+带输入映射（Aliasing）创建模板化因子：
+
+```
+sh factor.sh create my_custom_sma \
+  --expression "sma(input_price, window)" \
+  --inputs '{"input_price":"收盘","window":20}' \
+  --author "alice"
+```
+
+说明：
+- 因子表达式会自动做依赖解析和 DAG 拓扑排序，用户无需手动排列先后顺序；
+- 支持截面函数 `cs_rank()` / `cs_zscore()`，会在全市场按日期统一计算；
+- 表达式执行采用 AST 白名单校验（替代裸 `eval`）。
+
 查看因子详情：
 
 ```

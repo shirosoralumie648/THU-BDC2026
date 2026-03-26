@@ -8,6 +8,7 @@ from functools import lru_cache
 from tqdm import tqdm
 from tensorboardX import SummaryWriter
 from config import config
+from factor_store import apply_factor_expressions
 from factor_store import engineer_group_features
 from factor_store import resolve_factor_pipeline
 from factor_store import save_factor_snapshot
@@ -508,8 +509,12 @@ def _build_label_and_clean(processed, drop_small_open=True):
 def _preprocess_common(df, stockid2idx, desc, feature_pipeline, drop_small_open=True):
     assert stockid2idx is not None, "stockid2idx 不能为空"
     feature_columns = feature_pipeline['active_features']
-    custom_factor_specs = feature_pipeline['custom_specs']
-    builtin_override_specs = feature_pipeline.get('builtin_override_specs', [])
+    time_series_specs = feature_pipeline.get('time_series_specs')
+    if time_series_specs is None:
+        legacy_specs = [spec for spec in feature_pipeline.get('builtin_override_specs', []) if spec.get('overridden')]
+        legacy_specs.extend(feature_pipeline.get('custom_specs', []))
+        time_series_specs = legacy_specs
+    cross_sectional_specs = feature_pipeline.get('cross_sectional_specs', [])
 
     # 保证时序正确，避免 shift 标签错位
     df = df.copy()
@@ -523,12 +528,20 @@ def _preprocess_common(df, stockid2idx, desc, feature_pipeline, drop_small_open=
     num_processes = min(int(config.get('feature_engineer_processes', 4)), mp.cpu_count())
     with mp.Pool(processes=num_processes) as pool:
         tasks = [
-            (group, feature_pipeline['feature_set'], builtin_override_specs, custom_factor_specs)
+            (group, feature_pipeline['feature_set'], time_series_specs)
             for group in groups
         ]
         processed_list = list(tqdm(pool.imap(engineer_group_features, tasks), total=len(groups), desc=desc))
 
     processed = pd.concat(processed_list).reset_index(drop=True)
+    if cross_sectional_specs:
+        processed = processed.sort_values(['日期', '股票代码']).reset_index(drop=True)
+        processed = apply_factor_expressions(
+            processed,
+            cross_sectional_specs,
+            error_prefix='截面因子',
+            date_col='日期',
+        )
 
     # 映射股票索引，并剔除映射失败样本
     processed['instrument'] = processed['股票代码'].map(stockid2idx)
@@ -969,6 +982,7 @@ def format_factor_summary(feature_pipeline):
     return (
         f"feature_set={feature_pipeline['feature_set']}, "
         f"active={summary['active_total']}, "
+        f"cross_sectional={summary.get('cross_sectional_total', 0)}, "
         f"builtin={summary['builtin_enabled']}/{summary['builtin_total']}, "
         f"builtin_overridden={summary.get('builtin_overridden', 0)}, "
         f"custom={summary['custom_enabled']}/{summary['custom_total']}, "
@@ -999,10 +1013,13 @@ def _build_factor_markdown(feature_pipeline):
         f"- feature_set: `{feature_pipeline['feature_set']}`",
         f"- factor_store: `{feature_pipeline['store_path']}`",
         f"- builtin_registry: `{feature_pipeline.get('builtin_registry_path', '')}`",
+        f"- factor_fingerprint: `{feature_pipeline.get('factor_fingerprint', '')}`",
+        f"- snapshot_created_at: `{feature_pipeline.get('snapshot_meta', {}).get('created_at', '')}`",
         f"- active_total: `{summary['active_total']}`",
         f"- builtin_enabled: `{summary['builtin_enabled']}/{summary['builtin_total']}`",
         f"- builtin_overridden: `{summary.get('builtin_overridden', 0)}`",
         f"- custom_enabled: `{summary['custom_enabled']}/{summary['custom_total']}`",
+        f"- cross_sectional_total: `{summary.get('cross_sectional_total', 0)}`",
         f"- groups: `{json.dumps(summary['group_counts'], ensure_ascii=False)}`",
         "",
         "Active factors:",
@@ -1887,7 +1904,17 @@ def main():
         config['factor_store_path'],
         config['builtin_factor_registry_path'],
     )
-    save_factor_snapshot(factor_pipeline, os.path.join(output_dir, 'active_factors.json'))
+    snapshot_path = os.path.join(output_dir, 'active_factors.json')
+    snapshot_info = save_factor_snapshot(factor_pipeline, snapshot_path)
+    factor_pipeline['snapshot_meta'] = snapshot_info.get('snapshot', {})
+    factor_pipeline['factor_fingerprint'] = snapshot_info.get(
+        'factor_fingerprint',
+        factor_pipeline.get('factor_fingerprint', ''),
+    )
+    print(
+        f"已保存因子快照: {snapshot_path} | "
+        f"fingerprint={factor_pipeline.get('factor_fingerprint', '')}"
+    )
     print("当前因子配置:", format_factor_summary(factor_pipeline))
     print_active_factors(factor_pipeline)
     validation_mode = config.get('validation_mode', 'rolling')
