@@ -12,9 +12,16 @@ from factor_store import engineer_group_features
 from factor_store import resolve_factor_pipeline
 from factor_store import save_factor_snapshot
 from model import StockTransformer
+from data_manager import build_stock_industry_index as build_stock_industry_index_from_manager
+from data_manager import collect_data_sources
+from data_manager import load_market_dataset
+from data_manager import load_stock_to_industry_map
+from data_manager import resolve_industry_mapping_path
+from data_manager import save_data_manifest
 from utils import apply_cross_sectional_normalization
 from utils import augment_engineered_features
 from utils import create_ranking_dataset_vectorized
+from utils import resolve_feature_indices
 import joblib
 import os
 import json
@@ -109,57 +116,21 @@ def _load_benchmark_return_series():
 @lru_cache(maxsize=1)
 def _load_stock_industry_mapping():
     mapping_path = str(config.get('label_industry_map_path', '')).strip()
-    if not mapping_path:
+    if not mapping_path or not os.path.exists(mapping_path):
+        if mapping_path:
+            print(f'未找到行业映射文件，跳过行业中性化: {mapping_path}')
         return None
-    if not os.path.exists(mapping_path):
-        print(f'未找到行业映射文件，跳过行业中性化: {mapping_path}')
-        return None
-
-    mapping_df = pd.read_csv(mapping_path, dtype=str)
-    stock_col = str(config.get('label_industry_stock_col', '股票代码')).strip()
-    industry_col = str(config.get('label_industry_col', '行业')).strip()
-
-    if stock_col not in mapping_df.columns:
-        inferred_stock_col = _infer_existing_column(mapping_df, ['股票代码', 'stock_id', 'code', 'ts_code'])
-        if inferred_stock_col is None:
-            print(f'行业映射缺少股票代码列，跳过行业中性化: {mapping_path}')
-            return None
-        stock_col = inferred_stock_col
-
-    if industry_col not in mapping_df.columns:
-        inferred_industry_col = _infer_existing_column(mapping_df, ['行业', 'industry', 'sw_l1', 'sector'])
-        if inferred_industry_col is None:
-            print(f'行业映射缺少行业列，跳过行业中性化: {mapping_path}')
-            return None
-        industry_col = inferred_industry_col
-
-    mapping_df = mapping_df[[stock_col, industry_col]].copy()
-    mapping_df[stock_col] = _normalize_stock_code_series(mapping_df[stock_col])
-    mapping_df[industry_col] = mapping_df[industry_col].astype(str).str.strip()
-    mapping_df = mapping_df.dropna(subset=[stock_col, industry_col])
-    mapping_df = mapping_df[mapping_df[industry_col] != '']
-    if mapping_df.empty:
-        return None
-
-    mapping = (
-        mapping_df
-        .drop_duplicates(subset=[stock_col], keep='last')
-        .set_index(stock_col)[industry_col]
-        .to_dict()
+    mapping = load_stock_to_industry_map(
+        config,
+        stock_col_key='label_industry_stock_col',
+        industry_col_key='label_industry_col',
+        mapping_path=mapping_path,
     )
-    return mapping
+    return mapping if mapping else None
 
 
 def _resolve_prior_graph_industry_path():
-    candidates = [
-        str(config.get('prior_graph_industry_map_path', '')).strip(),
-        str(config.get('label_industry_map_path', '')).strip(),
-        str(config.get('stock_static_feature_path', '')).strip(),
-    ]
-    for path in candidates:
-        if path and os.path.exists(path):
-            return path
-    return ''
+    return resolve_industry_mapping_path(config)
 
 
 @lru_cache(maxsize=1)
@@ -167,35 +138,13 @@ def _load_prior_graph_industry_mapping():
     mapping_path = _resolve_prior_graph_industry_path()
     if not mapping_path:
         return {}
-
-    mapping_df = pd.read_csv(mapping_path, dtype=str)
-    stock_col = str(config.get('prior_graph_stock_col', '股票代码')).strip()
-    industry_col = str(config.get('prior_graph_industry_col', '行业')).strip()
-
-    if stock_col not in mapping_df.columns:
-        stock_col = _infer_existing_column(mapping_df, ['股票代码', 'stock_id', 'code', 'ts_code'])
-        if stock_col is None:
-            return {}
-    if industry_col not in mapping_df.columns:
-        industry_col = _infer_existing_column(mapping_df, ['行业', 'industry', 'sw_l1', 'sector'])
-        if industry_col is None:
-            return {}
-
-    mapping_df = mapping_df[[stock_col, industry_col]].copy()
-    mapping_df[stock_col] = _normalize_stock_code_series(mapping_df[stock_col])
-    mapping_df[industry_col] = mapping_df[industry_col].astype(str).str.strip()
-    mapping_df = mapping_df.dropna(subset=[stock_col, industry_col])
-    mapping_df = mapping_df[mapping_df[industry_col] != '']
-    if mapping_df.empty:
-        return {}
-
-    mapping = (
-        mapping_df
-        .drop_duplicates(subset=[stock_col], keep='last')
-        .set_index(stock_col)[industry_col]
-        .to_dict()
+    mapping = load_stock_to_industry_map(
+        config,
+        stock_col_key='prior_graph_stock_col',
+        industry_col_key='prior_graph_industry_col',
+        mapping_path=mapping_path,
     )
-    return mapping
+    return mapping if mapping else {}
 
 
 def _build_industry_prior_adjacency(stockid2idx, num_stocks):
@@ -329,28 +278,13 @@ def build_stock_industry_index(stockid2idx):
         return stock_industry_idx, []
 
     stock_codes = list(stockid2idx.keys())
-    normalized_codes = _normalize_stock_code_series(pd.Series(stock_codes)).tolist()
-
-    industries = []
-    for normalized in normalized_codes:
-        industry = stock_to_industry.get(normalized, None)
-        if industry:
-            industries.append(industry)
-    if not industries:
+    stock_industry_idx, industry_vocab, matched = build_stock_industry_index_from_manager(
+        stock_codes,
+        stock_to_industry,
+    )
+    if not industry_vocab:
         print('行业映射与股票池无交集，行业虚拟股将回退为关闭状态。')
-        return stock_industry_idx, []
-
-    industry_vocab = sorted(set(industries))
-    industry2idx = {industry: idx for idx, industry in enumerate(industry_vocab)}
-
-    matched = 0
-    for stock_code, normalized in zip(stock_codes, normalized_codes):
-        industry = stock_to_industry.get(normalized, None)
-        if not industry:
-            continue
-        stock_idx = int(stockid2idx[stock_code])
-        stock_industry_idx[stock_idx] = int(industry2idx[industry])
-        matched += 1
+        return np.full(num_stocks, -1, dtype=np.int64), []
 
     coverage = matched / float(max(1, num_stocks))
     print(
@@ -612,12 +546,14 @@ def _preprocess_common(df, stockid2idx, desc, feature_pipeline, drop_small_open=
         )
 
     if config.get('use_cross_sectional_feature_norm', True):
+        cs_exclude = [col for col in feature_columns if col.startswith('market_')]
         processed = apply_cross_sectional_normalization(
             processed,
             feature_columns,
             date_col='日期',
             method=config.get('feature_cs_norm_method', 'zscore'),
             clip_value=config.get('feature_cs_clip_value', None),
+            exclude_columns=cs_exclude,
         )
     return processed, feature_columns
 
@@ -1921,9 +1857,11 @@ def main():
     output_dir = config['output_dir']
     os.makedirs(output_dir,exist_ok=True)
     # 保存在output_dir中保存当前的配置文件，以便复现
-    data_path = config['data_path']
     with open(os.path.join(output_dir, 'config.json'), 'w') as f:
         json.dump(config, f, indent=4, ensure_ascii=False)
+    data_manifest = collect_data_sources(config, include_csv_stats=True)
+    manifest_path = save_data_manifest(output_dir, data_manifest)
+    print(f"已生成数据源清单: {manifest_path}")
     is_train = True
     writer = SummaryWriter(log_dir=os.path.join(output_dir, 'log')) if is_train else None
     if torch.cuda.is_available():
@@ -1942,8 +1880,8 @@ def main():
     print(device_msg)
     
     # 1. 数据加载
-    data_file = os.path.join(data_path, 'train.csv')
-    full_df = pd.read_csv(data_file)
+    full_df, data_file = load_market_dataset(config, 'train.csv')
+    print(f"训练数据文件: {data_file}")
     factor_pipeline = resolve_factor_pipeline(
         config['feature_num'],
         config['factor_store_path'],
@@ -2046,6 +1984,17 @@ def main():
     
     # 6. 模型初始化
     model = StockTransformer(input_dim=len(features), config=config, num_stocks=num_stocks)
+    market_context_feature_names = config.get(
+        'market_gating_context_feature_names',
+        [
+            'market_median_return',
+            'market_total_turnover_log',
+            'market_limit_up_count_log',
+            'market_limit_up_ratio',
+        ],
+    )
+    market_context_indices = resolve_feature_indices(features, market_context_feature_names)
+    model.set_market_context_feature_indices(market_context_indices)
     if prior_graph_adj is not None:
         model.set_prior_graph(torch.from_numpy(prior_graph_adj))
     model.set_stock_industry_index(torch.from_numpy(stock_industry_idx))

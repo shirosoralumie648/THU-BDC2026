@@ -114,6 +114,20 @@ config = {
     'use_market_gating': True,
     'market_gate_hidden_dim': 128,
     'market_gate_residual': 0.5,
+    'use_market_gating_macro_context': True,
+    'market_gate_macro_hidden_dim': 64,
+    'market_gate_macro_weight': 0.3,
+    'market_gating_context_feature_names': [
+        'market_median_return',
+        'market_total_turnover_log',
+        'market_limit_up_count_log',
+        'market_limit_up_ratio',
+    ],
+    # Market Gating 增强：日级宏观情绪隐含特征
+    'use_market_sentiment_features': True,
+    'market_sentiment_return_col_candidates': ['涨跌幅', 'return_1'],
+    'market_sentiment_turnover_col_candidates': ['成交额'],
+    'market_sentiment_limit_up_threshold': 0.095,
 
     # 多尺度时序编码：超短(1-3日动量) + 短(5-10) + 长(20-60)并行分支
     'use_multi_scale_temporal': True,

@@ -13,6 +13,7 @@ def apply_cross_sectional_normalization(
     date_col='日期',
     method='zscore',
     clip_value=None,
+    exclude_columns=None,
 ):
     """
     按交易日对给定列做截面标准化，降低跨时段分布漂移影响。
@@ -35,7 +36,8 @@ def apply_cross_sectional_normalization(
         raise ValueError(f'缺少日期列，无法做截面标准化: {date_col}')
 
     out = df.copy()
-    target_cols = [col for col in columns if col in out.columns]
+    exclude_set = set(exclude_columns or [])
+    target_cols = [col for col in columns if col in out.columns and col not in exclude_set]
     if not target_cols:
         return out
 
@@ -56,6 +58,19 @@ def apply_cross_sectional_normalization(
 
     out[target_cols] = out[target_cols].replace([np.inf, -np.inf], np.nan).fillna(0.0)
     return out
+
+
+def resolve_feature_indices(feature_columns, target_feature_names):
+    """
+    将目标特征名映射到当前输入特征索引，缺失项返回 -1。
+    """
+    if not target_feature_names:
+        return []
+    if not feature_columns:
+        return [-1 for _ in target_feature_names]
+
+    col2idx = {name: idx for idx, name in enumerate(feature_columns)}
+    return [int(col2idx.get(name, -1)) for name in target_feature_names]
 
 
 def _safe_feature_name(name):
@@ -325,6 +340,80 @@ def _add_cross_sectional_rank_features(
     return out, extra_features
 
 
+def _add_market_sentiment_features(
+    df,
+    config,
+    date_col='日期',
+):
+    """
+    追加日级市场情绪特征（对同一交易日全部股票共享）：
+    - 全市场中位数涨幅
+    - 全市场总成交额（log1p）
+    - 涨停家数（log1p）
+    - 涨停占比
+    """
+    if not bool(config.get('use_market_sentiment_features', True)):
+        return df, []
+
+    out = df.copy()
+    feature_names = []
+
+    return_candidates = config.get('market_sentiment_return_col_candidates', ['涨跌幅', 'return_1'])
+    if isinstance(return_candidates, str):
+        return_candidates = [return_candidates]
+    turnover_candidates = config.get('market_sentiment_turnover_col_candidates', ['成交额'])
+    if isinstance(turnover_candidates, str):
+        turnover_candidates = [turnover_candidates]
+
+    return_col = next((col for col in return_candidates if col in out.columns), None)
+    turnover_col = next((col for col in turnover_candidates if col in out.columns), None)
+    if return_col is None:
+        return out, feature_names
+
+    ret_raw = pd.to_numeric(out[return_col], errors='coerce')
+    ret_scale = 100.0 if ret_raw.abs().median(skipna=True) > 1.0 else 1.0
+    out['__market_ret_scaled'] = ret_raw / ret_scale
+
+    market_median_col = 'market_median_return'
+    out[market_median_col] = (
+        out.groupby(date_col)['__market_ret_scaled']
+        .transform('median')
+        .astype(np.float32)
+    )
+    feature_names.append(market_median_col)
+
+    if turnover_col is not None:
+        turnover = pd.to_numeric(out[turnover_col], errors='coerce').fillna(0.0).clip(lower=0.0)
+        out['__market_turnover'] = turnover
+        market_turnover_col = 'market_total_turnover_log'
+        out[market_turnover_col] = np.log1p(
+            out.groupby(date_col)['__market_turnover'].transform('sum')
+        ).astype(np.float32)
+        feature_names.append(market_turnover_col)
+
+    limit_up_threshold = float(config.get('market_sentiment_limit_up_threshold', 0.095))
+    out['__market_limit_up_flag'] = (out['__market_ret_scaled'] >= limit_up_threshold).astype(np.float32)
+
+    limit_up_count = out.groupby(date_col)['__market_limit_up_flag'].transform('sum')
+    market_limit_up_count_col = 'market_limit_up_count_log'
+    out[market_limit_up_count_col] = np.log1p(limit_up_count).astype(np.float32)
+    feature_names.append(market_limit_up_count_col)
+
+    sample_count = out.groupby(date_col)['__market_limit_up_flag'].transform('count').astype(np.float32)
+    market_limit_up_ratio_col = 'market_limit_up_ratio'
+    out[market_limit_up_ratio_col] = (limit_up_count / (sample_count + 1e-12)).astype(np.float32)
+    feature_names.append(market_limit_up_ratio_col)
+
+    out.drop(
+        columns=[
+            c for c in ['__market_ret_scaled', '__market_turnover', '__market_limit_up_flag']
+            if c in out.columns
+        ],
+        inplace=True,
+    )
+    return out, feature_names
+
+
 def augment_engineered_features(
     df,
     feature_columns,
@@ -357,6 +446,13 @@ def augment_engineered_features(
             date_col=date_col,
         )
         extra_features.extend(pv_cols)
+
+    out, market_cols = _add_market_sentiment_features(
+        out,
+        config=config,
+        date_col=date_col,
+    )
+    extra_features.extend(market_cols)
 
     out, cs_cols = _add_cross_sectional_rank_features(
         out,

@@ -23,7 +23,7 @@
 
 ## 2. 代码结构说明
 
-### [config.py](config.py)
+### [config.py](code/src/config.py)
 统一管理训练与推理参数，包括：
 - 序列长度 `sequence_length`（默认60）；
 - 模型超参数（`d_model`、`nhead`、`num_layers` 等）；
@@ -33,7 +33,7 @@
 - 稳定性参数（特征/标签截面标准化、标签极值处理、RankIC早停）；
 - 数据路径和输出路径（默认输出到 `output/`）。
 
-### [model.py](model.py)
+### [model.py](code/src/model.py)
 定义核心模型 `StockTransformer`，主要由以下模块组成：
 - `PositionalEncoding`：时序位置编码；
 - 时序编码器 `TransformerEncoder`：提取单股票历史序列表示；
@@ -44,7 +44,20 @@
 输入形状：`[batch, num_stocks, seq_len, feature_dim]`  
 输出形状：`[batch, num_stocks]`。
 
-### [utils.py](utils.py)
+### [data_manager.py](code/src/data_manager.py)
+统一的数据来源管理模块，提供：
+- 数据文件路径解析（`train.csv` / `test.csv` / `stock_data.csv`）；
+- 行业映射解析与标准化（兼容列名自动推断）；
+- 股票到行业索引映射构建（供行业虚拟股与先验图使用）；
+- 数据源清单导出（`data_manifest*.json`，便于复现与排障）。
+
+### [manage_data.py](code/src/manage_data.py)
+统一数据管理 CLI：
+- `manifest`：导出当前配置下的数据源清单；
+- `validate`：按模式校验关键文件是否存在；
+- `industry-index`：按输入股票池构建行业索引与词表。
+
+### [utils.py](code/src/utils.py)
 包含特征工程与数据集构建逻辑：
 - `engineer_features_39()`：39个技术指标特征；
 - `engineer_features()`：158个Alpha类特征；
@@ -53,7 +66,7 @@
 
 说明：特征工程使用了 `TA-Lib`，若未正确安装会报错。
 
-### [train.py](train.py)
+### [train.py](code/src/train.py)
 训练主脚本，关键内容：
 - 数据预处理：
 	- `_preprocess_common()`：按股票分组并行特征工程、股票ID映射、标签构建；
@@ -72,11 +85,12 @@
 - `best_model.pth`：最佳模型参数；
 - `scaler.pkl`：标准化器；
 - `config.json`：训练时配置快照；
+- `data_manifest.json`：训练使用的数据源清单；
 - `active_factors.json`：本次训练实际启用的因子快照；
 - `final_score.txt`：最佳分数记录；
 - `log/`：TensorBoard日志。
 
-### [predict.py](predict.py)
+### [predict.py](code/src/predict.py)
 推理主脚本，流程：
 1. 加载历史数据，取最新交易日；
 2. 执行与训练一致的特征工程（含截面标准化）；
@@ -89,11 +103,18 @@
 说明：
 - 若模型目录下存在 `active_factors.json`，`predict.py` 会优先使用该快照中的因子配置；
 - 这样即使之后你修改了 `config/factor_store.json`，旧模型推理仍会保持训练时的特征口径。
+- 预测阶段会额外写出 `data_manifest_predict.json`，记录当前推理的数据来源。
 
 ### [get_stock_data.py](get_stock_data.py)
 数据抓取脚本（Baostock）：
 - 获取沪深300成分股；
-- 抓取历史日线数据并保存为训练所需格式。
+- 抓取历史日线数据并保存为训练所需格式；
+- 运行结束后自动输出 `data_manifest_stock_fetch.json`。
+
+### [split_train_test.py](data/split_train_test.py)
+数据切分脚本：
+- 从 `stock_data.csv` 按日期区间切分 `train.csv` 和 `test.csv`；
+- 运行结束后自动输出 `data_manifest_split.json`。
 
 ---
 
@@ -150,7 +171,27 @@ sh tensorboard.sh
 sh tensorboard.sh ./model/60_158+39/log
 ```
 
-6) 管理因子
+6) 数据管理（可选）
+
+生成数据源清单：
+
+```
+python code/src/manage_data.py manifest --include-csv-stats
+```
+
+校验训练数据是否齐备：
+
+```
+python code/src/manage_data.py validate --mode train
+```
+
+按训练集股票池构建行业索引：
+
+```
+python code/src/manage_data.py industry-index
+```
+
+7) 管理因子
 
 列出当前因子：
 

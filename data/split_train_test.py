@@ -1,24 +1,46 @@
 import argparse
 from pathlib import Path
+import sys
 
 import pandas as pd
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+CODE_SRC_DIR = PROJECT_ROOT / "code" / "src"
+if str(CODE_SRC_DIR) not in sys.path:
+	sys.path.insert(0, str(CODE_SRC_DIR))
+
+from config import config
+from data_manager import build_file_snapshot
+from data_manager import resolve_data_root
+from data_manager import resolve_dataset_path
+from data_manager import save_data_manifest
+
 
 def parse_args() -> argparse.Namespace:
+	default_input = resolve_dataset_path(config, "stock_data.csv")
+	default_output_dir = resolve_data_root(config)
+
 	parser = argparse.ArgumentParser(
 		description="按日期区间将股票数据切分为 train.csv 和 test.csv"
 	)
 	parser.add_argument(
 		"--input",
 		type=str,
-		default="data/stock_data.csv",
-		help="原始数据文件路径，默认 data/stock_data.csv",
+		default=default_input,
+		help=f"原始数据文件路径，默认 {default_input}",
 	)
 	parser.add_argument(
 		"--output-dir",
 		type=str,
-		default="data",
-		help="输出目录，默认 data",
+		default=default_output_dir,
+		help=f"输出目录，默认 {default_output_dir}",
+	)
+	parser.add_argument(
+		"--manifest-path",
+		type=str,
+		default="",
+		help="数据清单输出路径，默认 <output-dir>/data_manifest_split.json",
 	)
 	parser.add_argument(
 		"--train-start",
@@ -45,6 +67,13 @@ def parse_args() -> argparse.Namespace:
 		help="测试集结束日期，默认 2026-03-13",
 	)
 	return parser.parse_args()
+
+
+def _resolve_path(path_str: str) -> Path:
+	path = Path(path_str).expanduser()
+	if path.is_absolute():
+		return path
+	return (PROJECT_ROOT / path).resolve()
 
 
 def _to_timestamp(date_str: str, name: str) -> pd.Timestamp:
@@ -79,8 +108,8 @@ def _filter_by_date(
 def main() -> None:
 	args = parse_args()
 
-	input_path = Path(args.input)
-	output_dir = Path(args.output_dir)
+	input_path = _resolve_path(args.input)
+	output_dir = _resolve_path(args.output_dir)
 	output_dir.mkdir(parents=True, exist_ok=True)
 
 	train_start = _to_timestamp(args.train_start, "--train-start")
@@ -118,6 +147,32 @@ def main() -> None:
 			"警告: 训练集或测试集为空，请检查日期范围是否与原始数据重叠。"
 		)
 		print(f"原始数据日期范围: {source_min_date} ~ {source_max_date}")
+
+	manifest_target = (
+		_resolve_path(args.manifest_path)
+		if str(args.manifest_path).strip()
+		else (output_dir / "data_manifest_split.json")
+	)
+	manifest = {
+		"action": "split_train_test",
+		"source": build_file_snapshot(str(input_path), inspect_csv=True),
+		"outputs": {
+			"train_csv": build_file_snapshot(str(train_path), inspect_csv=True),
+			"test_csv": build_file_snapshot(str(test_path), inspect_csv=True),
+		},
+		"split": {
+			"train_start": str(train_start.date()),
+			"train_end": str(train_end.date()),
+			"test_start": str(test_start.date()),
+			"test_end": str(test_end.date()),
+		},
+	}
+	saved_manifest = save_data_manifest(
+		str(manifest_target.parent),
+		manifest,
+		filename=manifest_target.name,
+	)
+	print(f"数据清单: {saved_manifest}")
 
 
 if __name__ == "__main__":

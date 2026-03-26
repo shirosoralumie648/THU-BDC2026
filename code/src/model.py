@@ -510,6 +510,20 @@ class StockTransformer(nn.Module):
         self.sequence_length = int(config['sequence_length'])
         self.use_market_gating = bool(config.get('use_market_gating', True))
         self.market_gate_residual = float(config.get('market_gate_residual', 0.5))
+        self.use_market_gating_macro_context = bool(
+            config.get('use_market_gating_macro_context', True)
+        )
+        self.market_gate_macro_weight = float(config.get('market_gate_macro_weight', 0.3))
+        market_context_feature_names = config.get(
+            'market_gating_context_feature_names',
+            [
+                'market_median_return',
+                'market_total_turnover_log',
+                'market_limit_up_count_log',
+                'market_limit_up_ratio',
+            ],
+        )
+        self.market_context_dim = max(1, len(market_context_feature_names))
         self.use_multitask_volatility = bool(config.get('use_multitask_volatility', False))
         self.use_multi_scale_temporal = bool(config.get('use_multi_scale_temporal', True))
         self.use_ultra_short_branch = bool(config.get('use_ultra_short_branch', True))
@@ -552,6 +566,11 @@ class StockTransformer(nn.Module):
             torch.empty(0, 0, dtype=torch.bool),
             persistent=False,
         )
+        self.register_buffer(
+            'market_context_feature_indices',
+            torch.full((self.market_context_dim,), -1, dtype=torch.long),
+            persistent=False,
+        )
 
         if self.use_market_gating:
             gate_hidden_dim = int(config.get('market_gate_hidden_dim', max(32, input_dim // 2)))
@@ -564,6 +583,19 @@ class StockTransformer(nn.Module):
                 nn.Linear(gate_hidden_dim, input_dim),
                 nn.Sigmoid(),
             )
+            self.market_macro_proj = None
+            if self.use_market_gating_macro_context:
+                macro_hidden_dim = int(
+                    config.get('market_gate_macro_hidden_dim', max(16, input_dim // 4))
+                )
+                macro_hidden_dim = max(8, macro_hidden_dim)
+                self.market_macro_proj = nn.Sequential(
+                    nn.LayerNorm(self.market_context_dim),
+                    nn.Linear(self.market_context_dim, macro_hidden_dim),
+                    nn.GELU(),
+                    nn.Dropout(config['dropout'] * 0.5),
+                    nn.Linear(macro_hidden_dim, input_dim),
+                )
         
         # 输入投影层
         self.input_proj = nn.Linear(input_dim, config['d_model'])
@@ -870,6 +902,69 @@ class StockTransformer(nn.Module):
         fused = torch.sum(stacked * weights.unsqueeze(-1), dim=1)
         return self.multi_scale_branch_norm(base_features + self.multi_scale_branch_dropout(fused))
 
+    def set_market_context_feature_indices(self, feature_indices):
+        if feature_indices is None:
+            self.market_context_feature_indices = torch.full(
+                (self.market_context_dim,),
+                -1,
+                dtype=torch.long,
+                device=self.market_context_feature_indices.device,
+            )
+            return
+
+        if not isinstance(feature_indices, torch.Tensor):
+            feature_indices = torch.as_tensor(feature_indices)
+        if feature_indices.dim() != 1:
+            raise ValueError(
+                f'feature_indices 形状非法: {tuple(feature_indices.shape)}，期望 [K]'
+            )
+
+        indices = feature_indices.to(
+            device=self.market_context_feature_indices.device,
+            dtype=torch.long,
+        )
+        if int(indices.numel()) != int(self.market_context_dim):
+            target = torch.full(
+                (self.market_context_dim,),
+                -1,
+                dtype=torch.long,
+                device=self.market_context_feature_indices.device,
+            )
+            limit = min(int(indices.numel()), int(self.market_context_dim))
+            if limit > 0:
+                target[:limit] = indices[:limit]
+            indices = target
+        self.market_context_feature_indices = indices
+
+    def _masked_market_mean_std(self, src, stock_valid_mask):
+        valid = stock_valid_mask.float().unsqueeze(-1).unsqueeze(-1)  # [B, N, 1, 1]
+        denom = valid.sum(dim=1).clamp(min=1.0)  # [B, 1, 1]
+        mean_per_time = (src * valid).sum(dim=1) / denom  # [B, L, F]
+        diff = src - mean_per_time.unsqueeze(1)
+        var_per_time = (diff * diff * valid).sum(dim=1) / denom
+        std_per_time = torch.sqrt(var_per_time + 1e-12)
+        market_mean = mean_per_time.mean(dim=1)  # [B, F]
+        market_vol = std_per_time.mean(dim=1)    # [B, F]
+        return market_mean, market_vol
+
+    def _extract_market_context_vector(self, src, stock_valid_mask):
+        batch_size, _, _, feature_dim = src.size()
+        idx_tensor = self.market_context_feature_indices
+        if idx_tensor.numel() == 0:
+            return src.new_zeros((batch_size, self.market_context_dim))
+
+        latest = src[:, :, -1, :]  # [B, N, F]
+        valid = stock_valid_mask.float()  # [B, N]
+        denom = valid.sum(dim=1).clamp(min=1.0)
+
+        context = src.new_zeros((batch_size, int(idx_tensor.numel())))
+        for i, idx in enumerate(idx_tensor.tolist()):
+            if idx < 0 or idx >= feature_dim:
+                continue
+            values = latest[:, :, int(idx)]
+            context[:, i] = (values * valid).sum(dim=1) / denom
+        return context
+
     def set_stock_industry_index(self, stock_to_industry_idx):
         self.cross_stock_attention.set_stock_industry_index(stock_to_industry_idx)
         if self.temporal_cross_stock_attention is not None:
@@ -916,9 +1011,12 @@ class StockTransformer(nn.Module):
 
         # 市场状态引导门控：用全市场均值+波动提取当前市场状态，对特征维做动态缩放。
         if self.use_market_gating:
-            market_mean = src.mean(dim=1).mean(dim=1)  # [batch, feature_dim]
-            market_vol = src.std(dim=1, unbiased=False).mean(dim=1)  # [batch, feature_dim]
+            market_mean, market_vol = self._masked_market_mean_std(src, stock_valid_mask)
             market_state = market_mean + market_vol
+            if self.use_market_gating_macro_context and self.market_macro_proj is not None:
+                macro_context = self._extract_market_context_vector(src, stock_valid_mask)
+                macro_delta = self.market_macro_proj(macro_context)
+                market_state = market_state + (self.market_gate_macro_weight * macro_delta)
             gates = self.market_gate(market_state).unsqueeze(1).unsqueeze(1)  # [batch, 1, 1, feature_dim]
             residual = self.market_gate_residual
             src = src * (residual + (1.0 - residual) * gates)

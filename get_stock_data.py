@@ -13,9 +13,23 @@ import pandas as pd
 from datetime import datetime
 import os
 import time
+from pathlib import Path
+import sys
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+CODE_SRC_DIR = SCRIPT_DIR / "code" / "src"
+if str(CODE_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(CODE_SRC_DIR))
+
+from config import config
+from data_manager import build_file_snapshot
+from data_manager import resolve_data_root
+from data_manager import resolve_dataset_path
+from data_manager import save_data_manifest
 
 
 def parse_args():
+    default_output = resolve_dataset_path(config, "stock_data.csv")
     parser = argparse.ArgumentParser(description="抓取沪深300成分股历史日线数据")
     parser.add_argument(
         "--start-date",
@@ -29,10 +43,22 @@ def parse_args():
     )
     parser.add_argument(
         "--output-path",
-        default="./data/stock_data.csv",
-        help="输出文件路径，默认 ./data/stock_data.csv",
+        default=default_output,
+        help=f"输出文件路径，默认 {default_output}",
+    )
+    parser.add_argument(
+        "--manifest-path",
+        default="",
+        help="数据清单输出路径，默认 <data_path>/data_manifest_stock_fetch.json",
     )
     return parser.parse_args()
+
+
+def _resolve_path(path_str):
+    path = Path(path_str).expanduser()
+    if path.is_absolute():
+        return path
+    return (SCRIPT_DIR / path).resolve()
 
 
 def login():
@@ -239,12 +265,17 @@ def merge_stock_data(existing_df, new_df, stock_code):
 
 def main():
     args = parse_args()
-    save_dir = os.path.dirname(args.output_path) or "./data"
+    output_path = str(_resolve_path(args.output_path))
+    save_dir = os.path.dirname(output_path) or str(_resolve_path(resolve_data_root(config)))
     os.makedirs(save_dir, exist_ok=True)
 
     start_date = args.start_date
     end_date = args.end_date
-    output_path = args.output_path
+    manifest_target = (
+        _resolve_path(args.manifest_path)
+        if str(args.manifest_path).strip()
+        else _resolve_path(os.path.join(resolve_data_root(config), "data_manifest_stock_fetch.json"))
+    )
     
     print(f"目标数据时间范围: {start_date} 至 {end_date}")
     print(f"输出文件: {output_path}")
@@ -257,13 +288,20 @@ def main():
     
     # 登录baostock
     login()
+    hs300_list_path = os.path.join(save_dir, "hs300_stock_list.csv")
+    failed_path = ""
+    failed_stocks = []
+    total = 0
+    success_count = 0
+    new_stock_count = 0
+    incremental_count = 0
+    total_new_records = 0
     
     try:
         # 获取沪深300成分股
         hs300_df = get_hs300_stocks()
         
         # 保存成分股列表
-        hs300_list_path = os.path.join(save_dir, "hs300_stock_list.csv")
         hs300_df.to_csv(hs300_list_path, index=False, encoding='utf-8-sig')
         
         # 读取现有数据（用于增量合并）
@@ -284,12 +322,7 @@ def main():
         hs300_df['纯代码'] = hs300_df['code'].str.replace('sh.', '').str.replace('sz.', '').str.zfill(6)
         
         # 统计信息
-        failed_stocks = []
         total = len(hs300_df)
-        success_count = 0
-        new_stock_count = 0
-        incremental_count = 0
-        total_new_records = 0
         
         for idx, row in hs300_df.iterrows():
             bs_code = row.get('code', '')
@@ -401,6 +434,33 @@ def main():
             failed_path = os.path.join(save_dir, "failed_stocks.csv")
             failed_df.to_csv(failed_path, index=False, encoding='utf-8-sig')
             print(f"\n失败股票列表已保存至: {failed_path}")
+
+        manifest = {
+            "action": "fetch_stock_data",
+            "parameters": {
+                "start_date": start_date,
+                "end_date": end_date,
+            },
+            "stats": {
+                "total_hs300_stocks": int(total),
+                "success_stocks": int(success_count),
+                "new_stock_count": int(new_stock_count),
+                "incremental_stock_count": int(incremental_count),
+                "failed_stock_count": int(len(failed_stocks)),
+                "total_new_records": int(total_new_records),
+            },
+            "outputs": {
+                "stock_data_csv": build_file_snapshot(output_path, inspect_csv=True),
+                "hs300_list_csv": build_file_snapshot(hs300_list_path, inspect_csv=True),
+                "failed_stocks_csv": build_file_snapshot(failed_path, inspect_csv=True),
+            },
+        }
+        saved_manifest = save_data_manifest(
+            str(manifest_target.parent),
+            manifest,
+            filename=manifest_target.name,
+        )
+        print(f"数据清单: {saved_manifest}")
     
     finally:
         logout()
