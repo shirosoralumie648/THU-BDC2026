@@ -1,3 +1,6 @@
+import json
+import os
+
 # 配置参数
 sequence_length = 60
 feature_num = '158+39'
@@ -10,6 +13,7 @@ config = {
     'batch_size': 4,        # 排序任务batch_size可以小一些，因为每个batch包含更多股票
     'num_epochs': 50,       # 排序任务可能需要更多epochs
     'learning_rate': 1e-5,  # 稍微降低学习率
+    'weight_decay': 1e-5,
     'dropout': 0.1,
     'feature_num': feature_num,
     'feature_engineer_processes': 4,
@@ -171,4 +175,33 @@ config = {
 
     'output_dir': f'./model/{sequence_length}_{feature_num}',
     'data_path': './data',
+    'prediction_scores_path': './output/prediction_scores.csv',
 }
+
+
+def _apply_runtime_override(cfg):
+    override_path = str(os.environ.get('THU_BDC_CONFIG_OVERRIDE_PATH', '')).strip()
+    if not override_path:
+        return cfg
+    if not os.path.exists(override_path):
+        print(f'[config] override 文件不存在，已忽略: {override_path}')
+        return cfg
+
+    try:
+        with open(override_path, 'r', encoding='utf-8') as f:
+            payload = json.load(f)
+        if not isinstance(payload, dict):
+            raise ValueError('override 内容必须是 JSON object')
+    except Exception as exc:
+        print(f'[config] 读取 override 失败，已忽略: {exc}')
+        return cfg
+
+    cfg.update(payload)
+    if ('sequence_length' in payload or 'feature_num' in payload) and ('output_dir' not in payload):
+        cfg['output_dir'] = f"./model/{cfg['sequence_length']}_{cfg['feature_num']}"
+
+    print(f'[config] 已加载 runtime override: {override_path}')
+    return cfg
+
+
+config = _apply_runtime_override(config)

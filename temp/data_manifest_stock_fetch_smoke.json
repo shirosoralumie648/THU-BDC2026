@@ -1,0 +1,64 @@
+{
+  "action": "fetch_stock_data",
+  "parameters": {
+    "start_date": "2026-03-02",
+    "end_date": "2026-03-05",
+    "index_date": "2026-03-05",
+    "hs300_used_date": "2026-03-05",
+    "frequency": "d",
+    "adjustflag": "1",
+    "max_retries": 2,
+    "retry_backoff_seconds": 1.2,
+    "request_interval_seconds": 0.0,
+    "limit_stocks": 3,
+    "rebuild": false,
+    "keep_suspended": false
+  },
+  "stats": {
+    "total_hs300_stocks": 3,
+    "success_stocks": 3,
+    "skipped_complete_stocks": 0,
+    "new_stock_count": 3,
+    "incremental_stock_count": 0,
+    "failed_stock_count": 0,
+    "total_new_records": 12,
+    "trade_days_in_window": 4
+  },
+  "quality": {
+    "duplicate_rows_by_stock_date": 0,
+    "median_stock_coverage_vs_trade_days": 1.0,
+    "p10_stock_coverage_vs_trade_days": 1.0,
+    "p90_stock_coverage_vs_trade_days": 1.0
+  },
+  "outputs": {
+    "stock_data_csv": {
+      "path": "/home/shirosora/THU-BDC2026/temp/stock_data_smoke.csv",
+      "exists": true,
+      "size_bytes": 1491,
+      "csv": {
+        "row_count": 12,
+        "column_count": 12,
+        "date_column": "日期",
+        "date_min": "2026-03-02",
+        "date_max": "2026-03-05",
+        "stock_column": "股票代码",
+        "stock_count": 3
+      }
+    },
+    "hs300_list_csv": {
+      "path": "/home/shirosora/THU-BDC2026/temp/hs300_stock_list.csv",
+      "exists": true,
+      "size_bytes": 131,
+      "csv": {
+        "row_count": 3,
+        "column_count": 3,
+        "stock_column": "code",
+        "stock_count": 3
+      }
+    },
+    "failed_stocks_csv": {
+      "path": "",
+      "exists": false
+    }
+  }
+}

@@ -176,6 +176,7 @@ def main():
 	prior_graph_path = os.path.join(config['output_dir'], 'prior_graph_adj.npy')
 	industry_index_path = os.path.join(config['output_dir'], 'stock_industry_idx.npy')
 	output_path = os.path.join('./output/', 'result.csv')
+	scores_output_path = str(config.get('prediction_scores_path', os.path.join('./output/', 'prediction_scores.csv')))
 	factor_snapshot_path = os.path.join(config['output_dir'], 'active_factors.json')
 	effective_features_path = os.path.join(config['output_dir'], 'effective_features.json')
 
@@ -355,6 +356,13 @@ def main():
 			stock_valid_mask=stock_valid_mask,
 		).squeeze(0).detach().cpu().numpy()         # [N]
 
+	score_df = pd.DataFrame({
+		'stock_id': sequence_stock_ids,
+		'score': scores,
+	}).sort_values('score', ascending=False).reset_index(drop=True)
+	os.makedirs(os.path.dirname(scores_output_path) or '.', exist_ok=True)
+	score_df.to_csv(scores_output_path, index=False)
+
 	selected_ids, weights = scores_to_portfolio(scores, sequence_stock_ids, strategy)
 
 	output_df = pd.DataFrame({
@@ -365,6 +373,7 @@ def main():
 
 	print(f'预测日期: {latest_date.date()}')
 	print(f'参与排序股票数: {len(sequence_stock_ids)}')
+	print(f'全量分数已写入: {scores_output_path}')
 	print(f'使用持仓策略: {strategy["name"]}')
 	print(f'结果已写入: {output_path}')
 

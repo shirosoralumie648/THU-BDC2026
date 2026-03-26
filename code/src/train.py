@@ -2014,7 +2014,11 @@ def main():
         ic_weight=float(config.get('ic_weight', 0.0)),
         ic_mode=str(config.get('ic_mode', 'pearson')),
     )
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config['learning_rate'], weight_decay=1e-5)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config['learning_rate'],
+        weight_decay=float(config.get('weight_decay', 1e-5)),
+    )
     scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.2, total_iters=config['num_epochs'])
     
     # 8. 排序模型训练
@@ -2152,6 +2156,11 @@ def main():
                 bad_epochs = 0
             else:
                 bad_epochs += 1
+
+            print(
+                f"早停状态: monitor={early_stop_monitor}, value={monitor_value:.6f}, "
+                f"best={best_monitor:.6f}, bad_epochs={bad_epochs}/{early_stop_patience}"
+            )
 
             if writer:
                 writer.add_scalar(f'early_stop/{early_stop_monitor}', monitor_value, global_step=epoch)

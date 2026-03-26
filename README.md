@@ -57,6 +57,13 @@
 - `validate`：按模式校验关键文件是否存在；
 - `industry-index`：按输入股票池构建行业索引与词表。
 
+### [gui_app.py](code/src/gui_app.py)
+可视化控制台入口（Streamlit）：
+- 数据中心（抓取/切分/预览）；
+- 因子实验室（管理/编辑/分布分析）；
+- 参数微调（配置覆盖文件）；
+- 训练监控、回测预测、部署验证。
+
 ### [utils.py](code/src/utils.py)
 包含特征工程与数据集构建逻辑：
 - `engineer_features_39()`：39个技术指标特征；
@@ -109,6 +116,8 @@
 数据抓取脚本（Baostock）：
 - 获取沪深300成分股；
 - 抓取历史日线数据并保存为训练所需格式；
+- 支持成分股快照日期、复权方式、重试/节流参数；
+- 支持增量补齐与全量重建；
 - 运行结束后自动输出 `data_manifest_stock_fetch.json`。
 
 ### [split_train_test.py](data/split_train_test.py)
@@ -191,7 +200,24 @@ python code/src/manage_data.py validate --mode train
 python code/src/manage_data.py industry-index
 ```
 
-7) 管理因子
+抓取 HS300 行情（示例）：
+
+```bash
+python get_stock_data.py \
+  --start-date 2015-01-01 \
+  --end-date 2026-03-20 \
+  --index-date 2026-03-20 \
+  --adjustflag 1 \
+  --max-retries 3
+```
+
+7) 启动 GUI 控制台
+
+```
+streamlit run code/src/gui_app.py
+```
+
+8) 管理因子
 
 列出当前因子：
 
