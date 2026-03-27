@@ -5,6 +5,12 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+STRUCTURED_DATA_SUBDIRS = {
+    'stock_data.csv': 'raw',
+    'train.csv': 'splits',
+    'test.csv': 'splits',
+}
+
 
 def infer_existing_column(df: pd.DataFrame, candidates: Iterable[str]) -> Optional[str]:
     for col in candidates:
@@ -14,20 +20,281 @@ def infer_existing_column(df: pd.DataFrame, candidates: Iterable[str]) -> Option
 
 
 def normalize_stock_code_series(series: pd.Series) -> pd.Series:
-    s = series.astype(str).str.strip()
-    s = s.str.split('.').str[-1]
-    s = s.str.replace(r'[^0-9]', '', regex=True)
-    s = s.str[-6:].str.zfill(6)
-    return s
+    s = series.fillna('').astype(str).str.strip().str.upper()
+    extracted = s.str.extract(r'(\d{6})', expand=False)
+    digits = s.str.replace(r'[^0-9]', '', regex=True)
+
+    normalized = extracted.fillna(digits)
+    normalized = normalized.fillna('').str.strip().str[-6:]
+
+    has_digits = normalized.str.len() > 0
+    normalized = normalized.where(~has_digits, normalized.str.zfill(6))
+    return normalized
 
 
 def resolve_data_root(config: Dict) -> str:
     return str(config.get('data_path', './data')).strip() or './data'
 
 
-def resolve_dataset_path(config: Dict, filename: str) -> str:
+def resolve_hf_factor_path(config: Dict) -> str:
+    raw_path = str(config.get('hf_daily_factor_path', '')).strip()
+    if not raw_path:
+        return ''
     data_root = os.path.abspath(resolve_data_root(config))
-    return os.path.join(data_root, filename)
+    return _normalize_candidate_path(raw_path, data_root)
+
+
+def resolve_structured_data_root(config: Dict) -> str:
+    data_root = os.path.abspath(resolve_data_root(config))
+    rel_root = str(config.get('structured_data_root', 'datasets')).strip()
+    if not rel_root:
+        return data_root
+    return os.path.join(data_root, rel_root)
+
+
+def _normalize_candidate_path(path: str, data_root: str) -> str:
+    path = str(path or '').strip()
+    if not path:
+        return ''
+    if os.path.isabs(path):
+        return path
+    direct_path = os.path.abspath(path)
+    if os.path.exists(direct_path):
+        return direct_path
+    return os.path.abspath(os.path.join(data_root, path))
+
+
+def _build_structured_dataset_path(config: Dict, filename: str) -> str:
+    subdir = STRUCTURED_DATA_SUBDIRS.get(filename, '')
+    structured_root = resolve_structured_data_root(config)
+    if subdir:
+        return os.path.join(structured_root, subdir, filename)
+    return os.path.join(structured_root, filename)
+
+
+def resolve_dataset_candidates(config: Dict, filename: str) -> List[str]:
+    data_root = os.path.abspath(resolve_data_root(config))
+    candidates = []
+
+    dataset_paths = config.get('dataset_paths', {})
+    if isinstance(dataset_paths, dict):
+        override_path = _normalize_candidate_path(dataset_paths.get(filename, ''), data_root)
+        if override_path:
+            candidates.append(override_path)
+
+    candidates.append(os.path.join(data_root, filename))
+
+    structured_path = _build_structured_dataset_path(config, filename)
+    if structured_path:
+        candidates.append(os.path.abspath(structured_path))
+
+    dedup = []
+    seen = set()
+    for path in candidates:
+        norm = os.path.abspath(path)
+        if norm in seen:
+            continue
+        seen.add(norm)
+        dedup.append(norm)
+    return dedup
+
+
+def resolve_dataset_write_targets(config: Dict, filename: str) -> Dict[str, object]:
+    candidates = resolve_dataset_candidates(config, filename)
+    if not candidates:
+        raise ValueError(f'无法为数据集构建路径候选: {filename}')
+
+    data_root = os.path.abspath(resolve_data_root(config))
+    legacy_path = os.path.abspath(os.path.join(data_root, filename))
+    structured_path = os.path.abspath(_build_structured_dataset_path(config, filename))
+
+    prefer_structured = bool(config.get('prefer_structured_data_layout', False))
+    override_path = None
+    dataset_paths = config.get('dataset_paths', {})
+    if isinstance(dataset_paths, dict):
+        override_path = _normalize_candidate_path(dataset_paths.get(filename, ''), data_root)
+        if override_path:
+            override_path = os.path.abspath(override_path)
+
+    if override_path:
+        primary_path = override_path
+    elif prefer_structured:
+        primary_path = structured_path
+    else:
+        primary_path = legacy_path
+
+    mirror_enabled = bool(config.get('mirror_legacy_and_structured_data', True))
+    mirrors = []
+    if mirror_enabled:
+        for candidate in [legacy_path, structured_path]:
+            if os.path.abspath(candidate) == os.path.abspath(primary_path):
+                continue
+            mirrors.append(candidate)
+
+    return {
+        'primary': os.path.abspath(primary_path),
+        'legacy': legacy_path,
+        'structured': structured_path,
+        'mirrors': mirrors,
+        'candidates': candidates,
+    }
+
+
+def resolve_dataset_path(config: Dict, filename: str, *, for_write: bool = False) -> str:
+    if for_write:
+        targets = resolve_dataset_write_targets(config, filename)
+        return str(targets['primary'])
+
+    candidates = resolve_dataset_candidates(config, filename)
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return candidates[0]
+
+
+def _resolve_join_column(df: pd.DataFrame, preferred: str, candidates: Iterable[str]) -> Optional[str]:
+    preferred = str(preferred or '').strip()
+    if preferred and preferred in df.columns:
+        return preferred
+    return infer_existing_column(df, candidates)
+
+
+def merge_hf_daily_factors(base_df: pd.DataFrame, config: Dict) -> Tuple[pd.DataFrame, Dict]:
+    if not bool(config.get('use_hf_daily_factor_merge', False)):
+        return base_df, {'enabled': False, 'reason': 'disabled'}
+
+    hf_path = resolve_hf_factor_path(config)
+    if not hf_path:
+        if bool(config.get('hf_factor_required', False)):
+            raise FileNotFoundError('hf_factor_required=True 但未配置 hf_daily_factor_path')
+        return base_df, {'enabled': True, 'path': '', 'used': False, 'reason': 'path_empty'}
+    if not os.path.exists(hf_path):
+        if bool(config.get('hf_factor_required', False)):
+            raise FileNotFoundError(f'未找到高频日因子文件: {hf_path}')
+        return base_df, {'enabled': True, 'path': hf_path, 'used': False, 'reason': 'path_not_exists'}
+
+    hf_df = pd.read_csv(hf_path)
+    if hf_df.empty:
+        return base_df, {'enabled': True, 'path': hf_path, 'used': False, 'reason': 'hf_empty'}
+
+    base_stock_col = _resolve_join_column(
+        base_df,
+        preferred='股票代码',
+        candidates=['股票代码', 'stock_id', 'code', 'ts_code'],
+    )
+    base_date_col = _resolve_join_column(
+        base_df,
+        preferred='日期',
+        candidates=['日期', 'date', 'datetime', 'trade_date'],
+    )
+    hf_stock_col = _resolve_join_column(
+        hf_df,
+        preferred=str(config.get('hf_factor_stock_col', '股票代码')),
+        candidates=['股票代码', 'stock_id', 'code', 'ts_code'],
+    )
+    hf_date_col = _resolve_join_column(
+        hf_df,
+        preferred=str(config.get('hf_factor_date_col', '日期')),
+        candidates=['日期', 'date', 'datetime', 'trade_date'],
+    )
+
+    if base_stock_col is None or base_date_col is None:
+        raise ValueError('基础数据缺少股票或日期列，无法合并高频因子')
+    if hf_stock_col is None or hf_date_col is None:
+        if bool(config.get('hf_factor_required', False)):
+            raise ValueError('高频因子文件缺少股票或日期列')
+        return base_df, {
+            'enabled': True,
+            'path': hf_path,
+            'used': False,
+            'reason': 'hf_missing_join_cols',
+        }
+
+    base = base_df.copy()
+    hf = hf_df.copy()
+    base['__join_stock'] = normalize_stock_code_series(base[base_stock_col])
+    hf['__join_stock'] = normalize_stock_code_series(hf[hf_stock_col])
+    base['__join_date'] = pd.to_datetime(base[base_date_col], errors='coerce').dt.normalize()
+    hf['__join_date'] = pd.to_datetime(hf[hf_date_col], errors='coerce').dt.normalize()
+
+    hf = hf.dropna(subset=['__join_stock', '__join_date'])
+    if hf.empty:
+        return base_df, {'enabled': True, 'path': hf_path, 'used': False, 'reason': 'hf_no_valid_rows'}
+
+    factor_cols = [
+        col for col in hf.columns
+        if col not in {hf_stock_col, hf_date_col, '__join_stock', '__join_date'}
+    ]
+    selected_factor_cols = config.get('hf_factor_columns', [])
+    if isinstance(selected_factor_cols, (list, tuple)) and selected_factor_cols:
+        selected_set = {str(col) for col in selected_factor_cols}
+        factor_cols = [col for col in factor_cols if col in selected_set]
+    if not factor_cols:
+        return base_df, {'enabled': True, 'path': hf_path, 'used': False, 'reason': 'no_factor_columns'}
+
+    prefix = str(config.get('hf_factor_prefix', '')).strip()
+    rename_map = {}
+    for col in factor_cols:
+        target_col = f'{prefix}{col}' if prefix else col
+        rename_map[col] = target_col
+
+    collision_cols = [new_col for new_col in rename_map.values() if new_col in base.columns]
+    if collision_cols:
+        allow_overwrite = bool(config.get('hf_factor_allow_overwrite_columns', False))
+        if not allow_overwrite:
+            for col, renamed in list(rename_map.items()):
+                if renamed in base.columns:
+                    rename_map[col] = f'hf_{renamed}'
+        else:
+            base = base.drop(columns=collision_cols)
+
+    hf_subset = hf[['__join_stock', '__join_date', *factor_cols]].copy()
+    hf_subset = hf_subset.rename(columns=rename_map)
+
+    dedup_keep = str(config.get('hf_factor_drop_duplicate_keep', 'last')).lower()
+    if dedup_keep not in {'first', 'last'}:
+        dedup_keep = 'last'
+    before_drop = len(hf_subset)
+    hf_subset = hf_subset.drop_duplicates(
+        subset=['__join_stock', '__join_date'],
+        keep=dedup_keep,
+    )
+    dropped_duplicates = int(before_drop - len(hf_subset))
+
+    merge_how = str(config.get('hf_factor_merge_how', 'left')).lower()
+    if merge_how not in {'left', 'inner'}:
+        merge_how = 'left'
+
+    merged = base.merge(
+        hf_subset,
+        on=['__join_stock', '__join_date'],
+        how=merge_how,
+        validate='many_to_one',
+    )
+    merged = merged.drop(columns=['__join_stock', '__join_date'])
+
+    merged_factor_cols = list(rename_map.values())
+    matched_rows = int(merged[merged_factor_cols].notna().any(axis=1).sum())
+    coverage = matched_rows / float(max(1, len(merged)))
+
+    meta = {
+        'enabled': True,
+        'path': hf_path,
+        'used': True,
+        'merge_how': merge_how,
+        'factor_columns': merged_factor_cols,
+        'factor_count': int(len(merged_factor_cols)),
+        'hf_rows': int(len(hf_df)),
+        'hf_rows_after_clean': int(len(hf_subset)),
+        'dropped_duplicates': dropped_duplicates,
+        'matched_rows': matched_rows,
+        'coverage': float(coverage),
+    }
+    print(
+        f'高频因子合并完成: path={hf_path}, factors={meta["factor_count"]}, '
+        f'coverage={coverage:.2%}, merge_how={merge_how}'
+    )
+    return merged, meta
 
 
 def load_market_dataset(
@@ -36,10 +303,17 @@ def load_market_dataset(
     *,
     dtype: Optional[Dict] = None,
 ) -> Tuple[pd.DataFrame, str]:
-    dataset_path = resolve_dataset_path(config, filename)
+    dataset_path = resolve_dataset_path(config, filename, for_write=False)
     if not os.path.exists(dataset_path):
-        raise FileNotFoundError(f'未找到数据文件: {dataset_path}')
-    return pd.read_csv(dataset_path, dtype=dtype), dataset_path
+        candidates = resolve_dataset_candidates(config, filename)
+        raise FileNotFoundError(f'未找到数据文件: {dataset_path} | candidates={candidates}')
+    df = pd.read_csv(dataset_path, dtype=dtype)
+    merged_df, hf_meta = merge_hf_daily_factors(df, config)
+    if hf_meta.get('enabled') and (not hf_meta.get('used', False)):
+        reason = hf_meta.get('reason', 'unknown')
+        path = hf_meta.get('path', '')
+        print(f'高频因子未启用到本次数据: reason={reason}, path={path}')
+    return merged_df, dataset_path
 
 
 def resolve_industry_mapping_path(config: Dict) -> str:
@@ -129,18 +403,27 @@ def build_stock_industry_index(
 
 def collect_data_sources(config: Dict, *, include_csv_stats: bool = False) -> Dict:
     data_root = os.path.abspath(resolve_data_root(config))
-    train_csv = resolve_dataset_path(config, 'train.csv')
-    test_csv = resolve_dataset_path(config, 'test.csv')
-    stock_data_csv = resolve_dataset_path(config, 'stock_data.csv')
+    structured_root = os.path.abspath(resolve_structured_data_root(config))
+    train_csv = resolve_dataset_path(config, 'train.csv', for_write=False)
+    test_csv = resolve_dataset_path(config, 'test.csv', for_write=False)
+    stock_data_csv = resolve_dataset_path(config, 'stock_data.csv', for_write=False)
+    hf_daily_factor_path = resolve_hf_factor_path(config)
     industry_map = resolve_industry_mapping_path(config)
     benchmark_path = str(config.get('label_benchmark_return_path', '')).strip()
     static_feature_path = str(config.get('stock_static_feature_path', '')).strip()
 
     return {
         'data_root': data_root,
+        'structured_data_root': structured_root,
+        'dataset_candidates': {
+            'train_csv': resolve_dataset_candidates(config, 'train.csv'),
+            'test_csv': resolve_dataset_candidates(config, 'test.csv'),
+            'stock_data_csv': resolve_dataset_candidates(config, 'stock_data.csv'),
+        },
         'train_csv': build_file_snapshot(train_csv, inspect_csv=include_csv_stats),
         'test_csv': build_file_snapshot(test_csv, inspect_csv=include_csv_stats),
         'stock_data_csv': build_file_snapshot(stock_data_csv, inspect_csv=include_csv_stats),
+        'hf_daily_factor': build_file_snapshot(hf_daily_factor_path, inspect_csv=include_csv_stats),
         'industry_mapping': build_file_snapshot(industry_map),
         'benchmark': build_file_snapshot(benchmark_path),
         'static_feature': build_file_snapshot(static_feature_path),

@@ -1377,6 +1377,132 @@ def set_factor_enabled(store_path, feature_set, factor_name, enabled):
     raise ValueError(f'未找到因子: {factor_name}')
 
 
+def set_factors_enabled(store_path, feature_set, factor_names, enabled, strict=True):
+    names = [str(name).strip() for name in factor_names if str(name).strip()]
+    dedup_names = list(dict.fromkeys(names))
+    if not dedup_names:
+        return {
+            'updated_total': 0,
+            'updated_builtin': 0,
+            'updated_custom': 0,
+            'missing': [],
+        }
+
+    store = load_factor_store(store_path)
+    feature_set_config = _get_feature_set_config(store, feature_set)
+    builtin_names = {spec['name'] for spec in get_builtin_specs(feature_set)}
+    custom_factors = feature_set_config.get('custom_factors', [])
+    custom_name_to_spec = {spec['name']: spec for spec in custom_factors}
+
+    existing_names = builtin_names | set(custom_name_to_spec)
+    missing = [name for name in dedup_names if name not in existing_names]
+    if missing and strict:
+        raise ValueError(f'未找到因子: {missing}')
+
+    disabled = set(feature_set_config.get('disabled_builtin_factors', []))
+    updated_builtin = 0
+    updated_custom = 0
+
+    for name in dedup_names:
+        if name in builtin_names:
+            before = name in disabled
+            if enabled:
+                disabled.discard(name)
+            else:
+                disabled.add(name)
+            after = name in disabled
+            if before != after:
+                updated_builtin += 1
+            continue
+
+        spec = custom_name_to_spec.get(name)
+        if spec is None:
+            continue
+        before = bool(spec.get('enabled', True))
+        spec['enabled'] = bool(enabled)
+        if before != bool(enabled):
+            updated_custom += 1
+
+    feature_set_config['disabled_builtin_factors'] = sorted(disabled)
+    save_factor_store(store, store_path)
+
+    return {
+        'updated_total': int(updated_builtin + updated_custom),
+        'updated_builtin': int(updated_builtin),
+        'updated_custom': int(updated_custom),
+        'missing': missing,
+    }
+
+
+def set_group_enabled(store_path, feature_set, group_name, enabled, source='all'):
+    source = str(source or 'all').lower()
+    if source not in {'all', 'builtin', 'custom'}:
+        raise ValueError(f'不支持的 source: {source}')
+
+    pipeline = resolve_factor_pipeline(feature_set, store_path)
+    target_specs = []
+    for spec in pipeline['all_specs']:
+        if str(spec.get('group', '')) != str(group_name):
+            continue
+        if source == 'builtin' and spec.get('source') != 'builtin':
+            continue
+        if source == 'custom' and spec.get('source') != 'custom':
+            continue
+        target_specs.append(spec)
+
+    if not target_specs:
+        raise ValueError(f'分组下无因子: group={group_name}, source={source}')
+
+    factor_names = [spec['name'] for spec in target_specs]
+    result = set_factors_enabled(
+        store_path,
+        feature_set,
+        factor_names,
+        enabled=enabled,
+        strict=False,
+    )
+    result.update({
+        'group': group_name,
+        'source': source,
+        'matched': len(factor_names),
+        'factors': factor_names,
+    })
+    return result
+
+
+def activate_only_factors(store_path, feature_set, active_factor_names, strict=True):
+    active_names = [str(name).strip() for name in active_factor_names if str(name).strip()]
+    active_set = set(active_names)
+
+    store = load_factor_store(store_path)
+    feature_set_config = _get_feature_set_config(store, feature_set)
+    builtin_names = {spec['name'] for spec in get_builtin_specs(feature_set)}
+    custom_factors = feature_set_config.get('custom_factors', [])
+    custom_names = {spec['name'] for spec in custom_factors}
+    all_names = builtin_names | custom_names
+
+    unknown = sorted(active_set - all_names)
+    if unknown and strict:
+        raise ValueError(f'activate-only 包含未知因子: {unknown}')
+
+    effective_active = active_set & all_names
+    feature_set_config['disabled_builtin_factors'] = sorted(
+        name for name in builtin_names if name not in effective_active
+    )
+    for spec in custom_factors:
+        spec['enabled'] = bool(spec['name'] in effective_active)
+
+    save_factor_store(store, store_path)
+
+    return {
+        'active_count': int(len(effective_active)),
+        'builtin_active': int(sum(1 for name in builtin_names if name in effective_active)),
+        'custom_active': int(sum(1 for name in custom_names if name in effective_active)),
+        'unknown': unknown,
+        'active_factors': sorted(effective_active),
+    }
+
+
 def upsert_custom_factor(
     store_path,
     feature_set,

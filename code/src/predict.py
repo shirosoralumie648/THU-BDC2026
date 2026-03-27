@@ -184,6 +184,56 @@ def apply_optional_global_scaler(processed, features, scaler_path):
 	raise TypeError(f'无法识别的 scaler 类型: {type(scaler)}')
 
 
+def dump_predict_factor_snapshot(processed, features, output_dir, latest_date):
+	if not bool(config.get('save_predict_factor_snapshot', True)):
+		return
+	if processed is None or len(processed) == 0:
+		return
+
+	artifact_dir = os.path.join(output_dir, 'factor_artifacts')
+	os.makedirs(artifact_dir, exist_ok=True)
+	latest_ts = pd.to_datetime(latest_date, errors='coerce')
+	if pd.isna(latest_ts):
+		latest_df = processed.copy()
+	else:
+		latest_df = processed[pd.to_datetime(processed['日期'], errors='coerce') == latest_ts].copy()
+		if latest_df.empty:
+			latest_df = processed.copy()
+
+	base_cols = [col for col in ['日期', '股票代码', 'instrument'] if col in latest_df.columns]
+	feature_cols = [col for col in features if col in latest_df.columns]
+	export_df = latest_df[base_cols + feature_cols].copy()
+
+	values_path = os.path.join(artifact_dir, 'predict_latest_factor_values.csv')
+	export_df.to_csv(values_path, index=False, encoding='utf-8')
+
+	if feature_cols:
+		stats_df = pd.DataFrame({
+			'feature': feature_cols,
+			'mean': export_df[feature_cols].mean(axis=0, skipna=True).values,
+			'std': export_df[feature_cols].std(axis=0, skipna=True).values,
+			'min': export_df[feature_cols].min(axis=0, skipna=True).values,
+			'max': export_df[feature_cols].max(axis=0, skipna=True).values,
+			'na_ratio': export_df[feature_cols].isna().mean(axis=0).values,
+		})
+	else:
+		stats_df = pd.DataFrame(columns=['feature', 'mean', 'std', 'min', 'max', 'na_ratio'])
+	stats_path = os.path.join(artifact_dir, 'predict_latest_factor_stats.csv')
+	stats_df.to_csv(stats_path, index=False, encoding='utf-8')
+
+	meta = {
+		'latest_date': str(pd.to_datetime(latest_df['日期'], errors='coerce').max().date()) if '日期' in latest_df.columns else '',
+		'rows_exported': int(len(export_df)),
+		'feature_count': int(len(feature_cols)),
+		'values_path': values_path,
+		'stats_path': stats_path,
+	}
+	meta_path = os.path.join(artifact_dir, 'predict_latest_factor_meta.json')
+	with open(meta_path, 'w', encoding='utf-8') as f:
+		json.dump(meta, f, ensure_ascii=False, indent=2)
+	print(f'已导出预测因子快照: {values_path} (rows={meta["rows_exported"]}, features={meta["feature_count"]})')
+
+
 def main():
 	model_path = os.path.join(config['output_dir'], 'best_model.pth')
 	scaler_path = os.path.join(config['output_dir'], 'scaler.pkl')
@@ -268,6 +318,7 @@ def main():
 		print(f'加载训练特征清单: {effective_features_path} | 特征数: {len(features)}')
 	processed[features] = processed[features].replace([np.inf, -np.inf], np.nan).fillna(0.0)
 	processed = apply_optional_global_scaler(processed, features, scaler_path)
+	dump_predict_factor_snapshot(processed, features, config['output_dir'], latest_date)
 
 	sequence_length = config['sequence_length']
 	sequences_np, sequence_stock_ids = build_inference_sequences(

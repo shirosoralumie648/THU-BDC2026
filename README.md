@@ -132,6 +132,16 @@
 默认训练数据文件：
 - `data/train.csv`
 
+结构化数据布局（可选，兼容旧路径）：
+- `data/datasets/raw/stock_data.csv`
+- `data/datasets/splits/train.csv`
+- `data/datasets/splits/test.csv`
+
+说明：
+- 读取时会按候选路径自动回退（优先存在的文件）；
+- 可通过 `config.py` 控制 `prefer_structured_data_layout`；
+- 默认会镜像写入 legacy 与 structured 路径，避免旧脚本失效。
+
 关键列：
 - `股票代码`、`日期`、`开盘`、`收盘`、`最高`、`最低`、`成交量`、`成交额`、`换手率`、`涨跌幅` 等。
 
@@ -211,6 +221,82 @@ python get_stock_data.py \
   --max-retries 3
 ```
 
+高频数据聚合为日因子（示例）：
+
+```bash
+python code/src/build_hf_daily_factors.py \
+  --input ./data/hf_minute.csv \
+  --output ./data/hf_daily_factors.csv \
+  --tail-minutes 30 \
+  --min-bars 10
+```
+
+多源输入（重复 `--input` 或一次逗号分隔）：
+
+```bash
+python code/src/build_hf_daily_factors.py \
+  --input ./data/hf_part1.csv \
+  --input ./data/hf_part2.csv \
+  --output ./data/hf_daily_factors.csv
+```
+
+按 glob 批量读取：
+
+```bash
+python code/src/build_hf_daily_factors.py \
+  --input-glob "./data/hf_*.csv" \
+  --output ./data/hf_daily_factors.csv
+```
+
+生成多版本（日内原频 + 重采样）因子并自动加后缀：
+
+```bash
+python code/src/build_hf_daily_factors.py \
+  --input-glob "./data/hf_*.csv" \
+  --resample-minutes 5,15,30 \
+  --min-bars 5 \
+  --output ./data/hf_daily_factors.csv
+```
+
+仅保留重采样版本（不输出 raw）：
+
+```bash
+python code/src/build_hf_daily_factors.py \
+  --input-glob "./data/hf_*.csv" \
+  --resample-minutes 5,15 \
+  --skip-raw \
+  --min-bars 3 \
+  --output ./data/hf_daily_factors.csv
+```
+
+说明：
+- 脚本会自动推断 `股票代码/时间/价格/成交量/成交额` 列名，也可通过 `--stock-col` 等参数显式指定；
+- 每次生成会写清单到 `<output_dir>/data_manifest_hf_daily_factors.json`；
+- 使用重采样时，单日 bar 数会减少，通常需要同步调低 `--min-bars`（默认 10）。
+
+启用高频日因子自动合并（通过 runtime override）：
+
+```json
+{
+  "use_hf_daily_factor_merge": true,
+  "hf_daily_factor_path": "./data/hf_daily_factors.csv",
+  "hf_factor_prefix": "hf_",
+  "hf_factor_required": true
+}
+```
+
+保存为例如 `./temp/config_override_hf.json` 后运行：
+
+```bash
+THU_BDC_CONFIG_OVERRIDE_PATH=./temp/config_override_hf.json sh train.sh
+THU_BDC_CONFIG_OVERRIDE_PATH=./temp/config_override_hf.json sh test.sh
+```
+
+说明：
+- 高频日因子按 `股票代码 + 日期` 合并到 `train.csv` / `test.csv` 读取结果；
+- 若 `hf_factor_required=true` 且文件缺失，训练/预测会直接报错；
+- `manage_data validate --mode train` 会同时检查高频因子文件是否存在（当 required=true）。
+
 7) 启动 GUI 控制台
 
 ```
@@ -284,9 +370,37 @@ sh factor.sh show gap_open_prev_close
 sh factor.sh delete gap_open_prev_close
 ```
 
+批量启用/关闭：
+
+```
+sh factor.sh enable-many RSQR60 ROC20 return_20
+sh factor.sh disable-many VSUMD60 WVMA60
+```
+
+按分组启用/关闭：
+
+```
+sh factor.sh list-groups
+sh factor.sh disable-group alpha_volume_behavior
+sh factor.sh enable-group alpha_volume_behavior
+```
+
+仅保留指定因子（其他全部关闭）：
+
+```
+sh factor.sh activate-only --names "开盘,收盘,ROC20,RSQR20,return_20"
+```
+
 因子配置文件默认在：
 
 `config/factor_store.json`
+
+训练/预测的因子结果落盘目录：
+
+- `model/<run>/factor_artifacts/train_factor_values.csv`
+- `model/<run>/factor_artifacts/val_factor_values.csv`
+- `model/<run>/factor_artifacts/predict_latest_factor_values.csv`
+- 以及对应 `*_factor_stats.csv`、`*_factor_meta.json`
 
 内置因子默认公式注册表在：
 

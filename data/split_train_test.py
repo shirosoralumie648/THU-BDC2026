@@ -14,12 +14,14 @@ from config import config
 from data_manager import build_file_snapshot
 from data_manager import resolve_data_root
 from data_manager import resolve_dataset_path
+from data_manager import resolve_dataset_write_targets
 from data_manager import save_data_manifest
 
 
 def parse_args() -> argparse.Namespace:
-	default_input = resolve_dataset_path(config, "stock_data.csv")
-	default_output_dir = resolve_data_root(config)
+	default_input = resolve_dataset_path(config, "stock_data.csv", for_write=False)
+	default_train_target = resolve_dataset_write_targets(config, "train.csv")["primary"]
+	default_output_dir = str(Path(default_train_target).parent)
 
 	parser = argparse.ArgumentParser(
 		description="按日期区间将股票数据切分为 train.csv 和 test.csv"
@@ -132,9 +134,23 @@ def main() -> None:
 
 	train_path = output_dir / "train.csv"
 	test_path = output_dir / "test.csv"
+	default_train_targets = resolve_dataset_write_targets(config, "train.csv")
+	default_test_targets = resolve_dataset_write_targets(config, "test.csv")
+	train_mirror_paths = []
+	test_mirror_paths = []
+	if str(train_path.resolve()) == str(Path(default_train_targets["primary"]).resolve()):
+		train_mirror_paths = [Path(path).resolve() for path in default_train_targets.get("mirrors", [])]
+	if str(test_path.resolve()) == str(Path(default_test_targets["primary"]).resolve()):
+		test_mirror_paths = [Path(path).resolve() for path in default_test_targets.get("mirrors", [])]
 
 	train_df.to_csv(train_path, index=False)
 	test_df.to_csv(test_path, index=False)
+	for mirror_path in train_mirror_paths:
+		mirror_path.parent.mkdir(parents=True, exist_ok=True)
+		train_df.to_csv(mirror_path, index=False)
+	for mirror_path in test_mirror_paths:
+		mirror_path.parent.mkdir(parents=True, exist_ok=True)
+		test_df.to_csv(mirror_path, index=False)
 
 	print(f"训练集: {train_path}，共 {len(train_df)} 行，股票数 {train_df['股票代码'].nunique()}")
 	print(f"测试集: {test_path}，共 {len(test_df)} 行，股票数 {test_df['股票代码'].nunique()}")
@@ -159,6 +175,8 @@ def main() -> None:
 		"outputs": {
 			"train_csv": build_file_snapshot(str(train_path), inspect_csv=True),
 			"test_csv": build_file_snapshot(str(test_path), inspect_csv=True),
+			"train_csv_mirrors": [build_file_snapshot(str(path), inspect_csv=True) for path in train_mirror_paths],
+			"test_csv_mirrors": [build_file_snapshot(str(path), inspect_csv=True) for path in test_mirror_paths],
 		},
 		"split": {
 			"train_start": str(train_start.date()),

@@ -1,13 +1,17 @@
 import argparse
 import json
+from pathlib import Path
 
 from config import config
 from factor_store import (
+    activate_only_factors,
     clear_builtin_override,
     delete_custom_factor,
     get_factor_spec,
     resolve_factor_pipeline,
+    set_factors_enabled,
     set_factor_enabled,
+    set_group_enabled,
     upsert_builtin_override,
     upsert_custom_factor,
 )
@@ -48,6 +52,9 @@ def _build_parser():
     list_parser.add_argument('--enabled-only', action='store_true', help='只显示启用中的因子')
     list_parser.add_argument('--json', action='store_true', help='以 JSON 输出')
 
+    list_groups_parser = subparsers.add_parser('list-groups', help='按分组查看因子统计')
+    list_groups_parser.add_argument('--json', action='store_true', help='以 JSON 输出')
+
     show_parser = subparsers.add_parser('show', help='查看单个因子详情')
     show_parser.add_argument('name', help='因子名')
 
@@ -56,6 +63,35 @@ def _build_parser():
 
     disable_parser = subparsers.add_parser('disable', help='关闭因子')
     disable_parser.add_argument('name', help='因子名')
+
+    enable_many_parser = subparsers.add_parser('enable-many', help='批量启用因子')
+    enable_many_parser.add_argument('names', nargs='+', help='因子名列表')
+    enable_many_parser.add_argument('--ignore-missing', action='store_true', help='忽略不存在的因子')
+
+    disable_many_parser = subparsers.add_parser('disable-many', help='批量关闭因子')
+    disable_many_parser.add_argument('names', nargs='+', help='因子名列表')
+    disable_many_parser.add_argument('--ignore-missing', action='store_true', help='忽略不存在的因子')
+
+    enable_group_parser = subparsers.add_parser('enable-group', help='按分组启用因子')
+    enable_group_parser.add_argument('group', help='分组名')
+    enable_group_parser.add_argument('--source', choices=['all', 'builtin', 'custom'], default='all')
+
+    disable_group_parser = subparsers.add_parser('disable-group', help='按分组关闭因子')
+    disable_group_parser.add_argument('group', help='分组名')
+    disable_group_parser.add_argument('--source', choices=['all', 'builtin', 'custom'], default='all')
+
+    activate_only_parser = subparsers.add_parser('activate-only', help='仅保留指定因子为启用状态')
+    activate_only_parser.add_argument(
+        '--names',
+        default='',
+        help='逗号分隔因子名，例如 "RSQR60,ROC20,return_20"',
+    )
+    activate_only_parser.add_argument(
+        '--from-file',
+        default='',
+        help='从文件读取因子名（每行一个，支持逗号分隔）',
+    )
+    activate_only_parser.add_argument('--ignore-missing', action='store_true', help='忽略不存在的因子')
 
     create_parser = subparsers.add_parser('create', help='新建自定义因子')
     create_parser.add_argument('name', help='因子名')
@@ -82,6 +118,46 @@ def _build_parser():
     reset_parser.add_argument('name', help='内置因子名')
 
     return parser
+
+
+def _group_summary_rows(pipeline):
+    rows = {}
+    for spec in pipeline['all_specs']:
+        group = str(spec.get('group', 'unknown'))
+        source = str(spec.get('source', 'unknown'))
+        key = (group, source)
+        if key not in rows:
+            rows[key] = {
+                'group': group,
+                'source': source,
+                'total': 0,
+                'enabled': 0,
+                'disabled': 0,
+            }
+        rows[key]['total'] += 1
+        if spec.get('enabled', True):
+            rows[key]['enabled'] += 1
+        else:
+            rows[key]['disabled'] += 1
+    return sorted(rows.values(), key=lambda row: (row['group'], row['source']))
+
+
+def _parse_activate_only_names(raw_names: str, file_path: str):
+    names = []
+    raw_names = str(raw_names or '').strip()
+    if raw_names:
+        names.extend([part.strip() for part in raw_names.split(',') if part.strip()])
+
+    file_path = str(file_path or '').strip()
+    if file_path:
+        payload = Path(file_path).read_text(encoding='utf-8')
+        for line in payload.splitlines():
+            for part in line.split(','):
+                name = part.strip()
+                if name:
+                    names.append(name)
+
+    return list(dict.fromkeys(names))
 
 
 def _print_factor_list(pipeline, enabled_only=False):
@@ -123,6 +199,84 @@ def main():
     if args.command == 'disable':
         set_factor_enabled(args.store_path, args.feature_set, args.name, False)
         print(f'已关闭因子: {args.name}')
+        return
+
+    if args.command == 'enable-many':
+        result = set_factors_enabled(
+            args.store_path,
+            args.feature_set,
+            args.names,
+            enabled=True,
+            strict=not bool(args.ignore_missing),
+        )
+        print(
+            f'批量启用完成: updated={result["updated_total"]} '
+            f'(builtin={result["updated_builtin"]}, custom={result["updated_custom"]})'
+        )
+        if result['missing']:
+            print(f'忽略不存在因子: {result["missing"]}')
+        return
+
+    if args.command == 'disable-many':
+        result = set_factors_enabled(
+            args.store_path,
+            args.feature_set,
+            args.names,
+            enabled=False,
+            strict=not bool(args.ignore_missing),
+        )
+        print(
+            f'批量关闭完成: updated={result["updated_total"]} '
+            f'(builtin={result["updated_builtin"]}, custom={result["updated_custom"]})'
+        )
+        if result['missing']:
+            print(f'忽略不存在因子: {result["missing"]}')
+        return
+
+    if args.command == 'enable-group':
+        result = set_group_enabled(
+            args.store_path,
+            args.feature_set,
+            args.group,
+            enabled=True,
+            source=args.source,
+        )
+        print(
+            f'分组启用完成: group={result["group"]}, source={result["source"]}, '
+            f'matched={result["matched"]}, updated={result["updated_total"]}'
+        )
+        return
+
+    if args.command == 'disable-group':
+        result = set_group_enabled(
+            args.store_path,
+            args.feature_set,
+            args.group,
+            enabled=False,
+            source=args.source,
+        )
+        print(
+            f'分组关闭完成: group={result["group"]}, source={result["source"]}, '
+            f'matched={result["matched"]}, updated={result["updated_total"]}'
+        )
+        return
+
+    if args.command == 'activate-only':
+        names = _parse_activate_only_names(args.names, args.from_file)
+        if not names:
+            raise ValueError('activate-only 至少需要通过 --names 或 --from-file 提供一个因子名')
+        result = activate_only_factors(
+            args.store_path,
+            args.feature_set,
+            names,
+            strict=not bool(args.ignore_missing),
+        )
+        print(
+            f'activate-only 完成: active={result["active_count"]} '
+            f'(builtin={result["builtin_active"]}, custom={result["custom_active"]})'
+        )
+        if result['unknown']:
+            print(f'忽略未知因子: {result["unknown"]}')
         return
 
     if args.command == 'create':
@@ -198,6 +352,19 @@ def main():
             print(json.dumps(pipeline, indent=2, ensure_ascii=False))
         else:
             _print_factor_list(pipeline, enabled_only=args.enabled_only)
+        return
+
+    if args.command == 'list-groups':
+        pipeline = resolve_factor_pipeline(args.feature_set, args.store_path)
+        rows = _group_summary_rows(pipeline)
+        if args.json:
+            print(json.dumps(rows, indent=2, ensure_ascii=False))
+            return
+        print('group                         source    enabled/total')
+        print('----------------------------  --------  -------------')
+        for row in rows:
+            group_label = row['group'][:28]
+            print(f'{group_label:<28}  {row["source"]:<8}  {row["enabled"]}/{row["total"]}')
         return
 
     raise ValueError(f'未知命令: {args.command}')

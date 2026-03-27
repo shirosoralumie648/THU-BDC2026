@@ -30,6 +30,7 @@ from config import config
 from data_manager import build_file_snapshot
 from data_manager import resolve_data_root
 from data_manager import resolve_dataset_path
+from data_manager import resolve_dataset_write_targets
 from data_manager import save_data_manifest
 
 HISTORY_FIELDS = (
@@ -52,7 +53,7 @@ OUTPUT_COLUMNS = [
 
 
 def parse_args() -> argparse.Namespace:
-    default_output = resolve_dataset_path(config, 'stock_data.csv')
+    default_output = resolve_dataset_path(config, 'stock_data.csv', for_write=True)
 
     parser = argparse.ArgumentParser(description='抓取沪深300成分股历史日线数据')
     parser.add_argument('--start-date', default='2015-01-01', help='抓取起始日期，格式 YYYY-MM-DD')
@@ -388,6 +389,15 @@ def main() -> None:
     index_date = _normalize_date(args.index_date, '--index-date') if str(args.index_date).strip() else end_date
 
     output_path = str(_resolve_path(args.output_path))
+    default_write_targets = resolve_dataset_write_targets(config, 'stock_data.csv')
+    default_primary = str(Path(default_write_targets['primary']).resolve())
+    output_path_resolved = str(Path(output_path).resolve())
+    mirror_output_paths = []
+    if output_path_resolved == default_primary:
+        mirror_output_paths = [
+            str(Path(path).resolve())
+            for path in default_write_targets.get('mirrors', [])
+        ]
     data_root = _resolve_path(resolve_data_root(config))
     save_dir = Path(output_path).parent
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -528,6 +538,8 @@ def main() -> None:
         )
         final_df = final_df[OUTPUT_COLUMNS].reset_index(drop=True)
         _save_frame(final_df, output_path)
+        for mirror_path in mirror_output_paths:
+            _save_frame(final_df, mirror_path)
 
         trade_days = _count_trade_days(start_date, end_date)
 
@@ -604,6 +616,10 @@ def main() -> None:
             },
             'outputs': {
                 'stock_data_csv': build_file_snapshot(output_path, inspect_csv=True),
+                'stock_data_csv_mirrors': [
+                    build_file_snapshot(path, inspect_csv=True)
+                    for path in mirror_output_paths
+                ],
                 'hs300_list_csv': build_file_snapshot(hs300_list_path, inspect_csv=True),
                 'failed_stocks_csv': build_file_snapshot(failed_path, inspect_csv=True),
             },

@@ -1,0 +1,76 @@
+{
+  "data_root": "/home/shirosora/THU-BDC2026/data",
+  "structured_data_root": "/home/shirosora/THU-BDC2026/data/datasets",
+  "dataset_candidates": {
+    "train_csv": [
+      "/home/shirosora/THU-BDC2026/data/train.csv",
+      "/home/shirosora/THU-BDC2026/data/datasets/splits/train.csv"
+    ],
+    "test_csv": [
+      "/home/shirosora/THU-BDC2026/data/test.csv",
+      "/home/shirosora/THU-BDC2026/data/datasets/splits/test.csv"
+    ],
+    "stock_data_csv": [
+      "/home/shirosora/THU-BDC2026/data/stock_data.csv",
+      "/home/shirosora/THU-BDC2026/data/datasets/raw/stock_data.csv"
+    ]
+  },
+  "train_csv": {
+    "path": "/home/shirosora/THU-BDC2026/data/train.csv",
+    "exists": true,
+    "size_bytes": 80682539,
+    "csv": {
+      "row_count": 713069,
+      "column_count": 12,
+      "date_column": "日期",
+      "date_min": "2015-01-05",
+      "date_max": "2026-03-06",
+      "stock_column": "股票代码",
+      "stock_count": 300
+    }
+  },
+  "test_csv": {
+    "path": "/home/shirosora/THU-BDC2026/data/test.csv",
+    "exists": true,
+    "size_bytes": 171684,
+    "csv": {
+      "row_count": 1500,
+      "column_count": 12,
+      "date_column": "日期",
+      "date_min": "2026-03-09",
+      "date_max": "2026-03-13",
+      "stock_column": "股票代码",
+      "stock_count": 300
+    }
+  },
+  "stock_data_csv": {
+    "path": "/home/shirosora/THU-BDC2026/data/stock_data.csv",
+    "exists": true,
+    "size_bytes": 80865485,
+    "csv": {
+      "row_count": 716669,
+      "column_count": 12,
+      "date_column": "日期",
+      "date_min": "2015-01-05",
+      "date_max": "2026-03-24",
+      "stock_column": "股票代码",
+      "stock_count": 300
+    }
+  },
+  "hf_daily_factor": {
+    "path": "",
+    "exists": false
+  },
+  "industry_mapping": {
+    "path": "",
+    "exists": false
+  },
+  "benchmark": {
+    "path": "",
+    "exists": false
+  },
+  "static_feature": {
+    "path": "",
+    "exists": false
+  }
+}

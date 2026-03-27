@@ -97,6 +97,15 @@ def command_validate(args: argparse.Namespace) -> int:
         if not bool(meta.get('exists', False)):
             missing.append((key, meta.get('path', '')))
 
+    if (
+        args.mode in {'train', 'full'}
+        and bool(config.get('use_hf_daily_factor_merge', False))
+        and bool(config.get('hf_factor_required', False))
+    ):
+        hf_meta = manifest.get('hf_daily_factor', {})
+        if not bool(hf_meta.get('exists', False)):
+            missing.append(('hf_daily_factor', hf_meta.get('path', '')))
+
     if missing:
         print('数据校验失败，缺失文件:')
         for key, path in missing:
@@ -107,6 +116,9 @@ def command_validate(args: argparse.Namespace) -> int:
     for key in _required_keys_by_mode(args.mode):
         meta = manifest[key]
         print(f"  - {key}: {meta.get('path', '')}")
+    if bool(config.get('use_hf_daily_factor_merge', False)):
+        hf_meta = manifest.get('hf_daily_factor', {})
+        print(f"  - hf_daily_factor: {hf_meta.get('path', '')} (exists={hf_meta.get('exists', False)})")
     return 0
 
 
