@@ -17,7 +17,14 @@ config = {
     'dropout': 0.1,
     'feature_num': feature_num,
     'feature_engineer_processes': 4,
+    'enable_grad_clip': True,
     'max_grad_norm': 5.0,
+    'use_amp': True,
+    'use_amp_eval': True,
+    'train_zero_grad_set_to_none': True,
+    # 0 表示使用完整数据；>0 可用于快速实验
+    'max_train_batches_per_epoch': 0,
+    'max_eval_batches_per_fold': 0,
 
     'pairwise_weight': 1.0,  # 配对损失权重
     'listnet_weight': 1.0,   # ListNet 权重
@@ -157,7 +164,7 @@ config = {
     'strategy_selection_mode': 'risk_adjusted',  # risk_adjusted | return
     'strategy_risk_lambda': 0.2,
     'selection_metric': 'auto',
-    'prediction_top_k_candidates': [3, 5],
+    'prediction_top_k_candidates': [2, 3, 5],
     'prediction_weighting_candidates': ['equal', 'softmax'],
     'softmax_temperature': 1.0,
 
@@ -171,7 +178,31 @@ config = {
     'builtin_factor_registry_path': './config/builtin_factors.json',
     'factor_store_path': './config/factor_store.json',
     'factor_histogram_max_features': 20,
-    'factor_ablation_enabled': True,
+    'factor_ablation_enabled': False,
+
+    # 数据存储布局：保持兼容 legacy(data/*.csv)，可选 structured(data/datasets/*)
+    'structured_data_root': 'datasets',
+    'prefer_structured_data_layout': False,
+    'mirror_legacy_and_structured_data': True,
+    'dataset_paths': {},
+
+    # 因子结果落盘（训练/推理），便于排障与复盘
+    'dump_factor_artifacts': True,
+    'factor_artifact_max_rows': 100000,
+    'factor_artifact_include_full_feature_stats': True,
+    'save_predict_factor_snapshot': True,
+
+    # 高频(日内)因子融合：将外部高频聚合后的日因子按 股票代码+日期 合并到训练/推理输入
+    'use_hf_daily_factor_merge': False,
+    'hf_daily_factor_path': '',  # 例如 ./data/hf_daily_factors.csv
+    'hf_factor_stock_col': '股票代码',
+    'hf_factor_date_col': '日期',
+    'hf_factor_columns': [],  # 留空表示导入全部非主键列
+    'hf_factor_prefix': '',   # 例如 'hf_'，可避免与现有列冲突
+    'hf_factor_merge_how': 'left',  # left | inner
+    'hf_factor_drop_duplicate_keep': 'last',  # first | last
+    'hf_factor_allow_overwrite_columns': False,
+    'hf_factor_required': False,
 
     'output_dir': f'./model/{sequence_length}_{feature_num}',
     'data_path': './data',

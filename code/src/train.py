@@ -1058,6 +1058,73 @@ def log_factor_dashboard(writer, feature_pipeline, raw_hist_frame, scaled_hist_f
         writer.add_histogram(f'factors/raw/{feature_name}', raw_values, global_step=0)
         writer.add_histogram(f'factors/scaled/{feature_name}', scaled_values, global_step=0)
 
+
+def _feature_stats_frame(df, feature_columns):
+    if not feature_columns:
+        return pd.DataFrame(columns=['feature', 'mean', 'std', 'min', 'max', 'na_ratio'])
+
+    feature_df = df[feature_columns]
+    stats = pd.DataFrame({
+        'feature': feature_columns,
+        'mean': feature_df.mean(axis=0, skipna=True).values,
+        'std': feature_df.std(axis=0, skipna=True).values,
+        'min': feature_df.min(axis=0, skipna=True).values,
+        'max': feature_df.max(axis=0, skipna=True).values,
+        'na_ratio': feature_df.isna().mean(axis=0).values,
+    })
+    return stats
+
+
+def dump_factor_artifacts(split_name, df, feature_columns, output_dir):
+    if not bool(config.get('dump_factor_artifacts', True)):
+        return
+    if df is None or len(df) == 0:
+        return
+
+    artifact_dir = os.path.join(output_dir, 'factor_artifacts')
+    os.makedirs(artifact_dir, exist_ok=True)
+    max_rows = int(config.get('factor_artifact_max_rows', 100000))
+    max_rows = max(0, max_rows)
+
+    base_cols = [
+        col for col in ['日期', '股票代码', 'instrument', 'label', 'label_raw', 'vol_label', 'vol_label_raw']
+        if col in df.columns
+    ]
+    export_cols = base_cols + [col for col in feature_columns if col in df.columns]
+
+    export_df = df[export_cols].copy()
+    if max_rows > 0 and len(export_df) > max_rows:
+        export_df = (
+            export_df.sample(n=max_rows, random_state=42)
+            .sort_values([col for col in ['日期', '股票代码'] if col in export_df.columns])
+            .reset_index(drop=True)
+        )
+
+    values_path = os.path.join(artifact_dir, f'{split_name}_factor_values.csv')
+    export_df.to_csv(values_path, index=False, encoding='utf-8')
+
+    stats_path = os.path.join(artifact_dir, f'{split_name}_factor_stats.csv')
+    if bool(config.get('factor_artifact_include_full_feature_stats', True)):
+        stats_df = _feature_stats_frame(df, [col for col in feature_columns if col in df.columns])
+        stats_df.to_csv(stats_path, index=False, encoding='utf-8')
+
+    meta = {
+        'split': split_name,
+        'rows_total': int(len(df)),
+        'rows_exported': int(len(export_df)),
+        'feature_count': int(len(feature_columns)),
+        'feature_count_present': int(sum(1 for col in feature_columns if col in df.columns)),
+        'values_path': values_path,
+        'stats_path': stats_path if bool(config.get('factor_artifact_include_full_feature_stats', True)) else '',
+    }
+    meta_path = os.path.join(artifact_dir, f'{split_name}_factor_meta.json')
+    with open(meta_path, 'w', encoding='utf-8') as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+    print(
+        f'已导出 {split_name} 因子结果: values={values_path}, '
+        f'rows={meta["rows_exported"]}/{meta["rows_total"]}, features={meta["feature_count_present"]}'
+    )
+
 class RankingDataset(torch.utils.data.Dataset):
     """排序数据集类"""
     def __init__(self, sequences, targets, relevance_scores, stock_indices, vol_targets=None):
@@ -1278,15 +1345,32 @@ def _compute_volatility_aux_loss(vol_pred, vol_target, stock_valid_mask):
     return loss, mae
 
 
-def train_ranking_model(model, dataloader, criterion, optimizer, device, epoch, writer, strategy_candidates):
+def train_ranking_model(
+    model,
+    dataloader,
+    criterion,
+    optimizer,
+    device,
+    epoch,
+    writer,
+    strategy_candidates,
+    *,
+    use_amp=False,
+    scaler=None,
+):
     model.train()
     total_loss = 0
     total_metrics = {}
     local_step = 0
     use_multitask_volatility = bool(config.get('use_multitask_volatility', False))
     volatility_loss_weight = float(config.get('volatility_loss_weight', 0.2))
+    use_amp = bool(use_amp) and (device.type == 'cuda')
+    max_train_batches = int(config.get('max_train_batches_per_epoch', 0) or 0)
+    zero_grad_set_to_none = bool(config.get('train_zero_grad_set_to_none', True))
     
-    for batch in tqdm(dataloader, desc=f"Training Epoch {epoch+1}"):
+    for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"Training Epoch {epoch+1}"), start=1):
+        if max_train_batches > 0 and batch_idx > max_train_batches:
+            break
         sequences = batch['sequences'].to(device)    # [batch, max_stocks, seq_len, features]
         targets = batch['targets'].to(device)        # [batch, max_stocks] 真实涨跌幅
         vol_targets = batch.get('vol_targets', None)
@@ -1296,48 +1380,49 @@ def train_ranking_model(model, dataloader, criterion, optimizer, device, epoch, 
         masks = batch['masks'].to(device)            # [batch, max_stocks] 有效位置mask
         stock_valid_mask = masks > 0.5
         
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=zero_grad_set_to_none)
         
-        # 模型预测
-        outputs = model(
-            sequences,
-            stock_indices=stock_indices,
-            stock_valid_mask=stock_valid_mask,
-            return_aux=use_multitask_volatility,
-        )  # [batch, max_stocks] 预测分数
-        if use_multitask_volatility:
-            outputs, vol_outputs = outputs
-        else:
-            vol_outputs = None
-        
-        # 应用mask，只考虑有效股票
-        masked_outputs = outputs * masks + (1 - masks) * (-1e9)  # 无效位置设为很小的值
-        masked_targets = targets * masks
-        
-        # 计算损失（只对有效股票计算）
-        batch_loss = None
-        batch_size = sequences.size(0)
-        
-        for i in range(batch_size):
-            mask = masks[i]
-            valid_indices = mask.nonzero().squeeze()
+        with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=use_amp):
+            # 模型预测
+            outputs = model(
+                sequences,
+                stock_indices=stock_indices,
+                stock_valid_mask=stock_valid_mask,
+                return_aux=use_multitask_volatility,
+            )  # [batch, max_stocks] 预测分数
+            if use_multitask_volatility:
+                outputs, vol_outputs = outputs
+            else:
+                vol_outputs = None
             
-            if valid_indices.numel() == 0:
-                continue
+            # 应用mask，只考虑有效股票
+            masked_outputs = outputs * masks + (1 - masks) * (-1e9)  # 无效位置设为很小的值
+            masked_targets = targets * masks
+            
+            # 计算损失（只对有效股票计算）
+            batch_loss = None
+            batch_size = sequences.size(0)
+            
+            for i in range(batch_size):
+                mask = masks[i]
+                valid_indices = mask.nonzero().squeeze()
                 
-            if valid_indices.dim() == 0:
-                valid_indices = valid_indices.unsqueeze(0)
-            
-            # 获取有效股票的预测值和真实收益率
-            valid_pred = masked_outputs[i][valid_indices]
-            valid_target = masked_targets[i][valid_indices]
+                if valid_indices.numel() == 0:
+                    continue
+                    
+                if valid_indices.dim() == 0:
+                    valid_indices = valid_indices.unsqueeze(0)
+                
+                # 获取有效股票的预测值和真实收益率
+                valid_pred = masked_outputs[i][valid_indices]
+                valid_target = masked_targets[i][valid_indices]
 
-            valid_pred_for_loss, valid_target_for_loss = transform_targets_for_loss(valid_pred, valid_target)
-            
-            if len(valid_pred_for_loss) > 1:
-                # 使用 PortfolioOptimizationLoss 直接对实际收益率进行平滑优化
-                loss = criterion(valid_pred_for_loss.unsqueeze(0), valid_target_for_loss.unsqueeze(0))
-                batch_loss = batch_loss + loss if isinstance(batch_loss, torch.Tensor) else loss
+                valid_pred_for_loss, valid_target_for_loss = transform_targets_for_loss(valid_pred, valid_target)
+                
+                if len(valid_pred_for_loss) > 1:
+                    # 使用 PortfolioOptimizationLoss 直接对实际收益率进行平滑优化
+                    loss = criterion(valid_pred_for_loss.unsqueeze(0), valid_target_for_loss.unsqueeze(0))
+                    batch_loss = batch_loss + loss if isinstance(batch_loss, torch.Tensor) else loss
         
         if batch_loss is not None:
             rank_loss = batch_loss / batch_size
@@ -1354,14 +1439,28 @@ def train_ranking_model(model, dataloader, criterion, optimizer, device, epoch, 
                 if vol_aux_loss is not None:
                     total_batch_loss = total_batch_loss + volatility_loss_weight * vol_aux_loss
 
-            total_batch_loss.backward()
-            if not config.get('drop_clip', True):
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config['max_grad_norm'])
-                if writer:
-                    writer.add_scalar('train/grad_norm', grad_norm, global_step=epoch*len(dataloader)+local_step)
-            optimizer.step()
+            use_grad_clip = bool(config.get('enable_grad_clip', True))
+            max_grad_norm = float(config.get('max_grad_norm', 0.0) or 0.0)
+            if use_amp:
+                if scaler is None:
+                    scaler = torch.amp.GradScaler('cuda', enabled=True)
+                scaler.scale(total_batch_loss).backward()
+                if use_grad_clip and max_grad_norm > 0.0:
+                    scaler.unscale_(optimizer)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                    if writer:
+                        writer.add_scalar('train/grad_norm', grad_norm, global_step=epoch*len(dataloader)+local_step)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                total_batch_loss.backward()
+                if use_grad_clip and max_grad_norm > 0.0:
+                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                    if writer:
+                        writer.add_scalar('train/grad_norm', grad_norm, global_step=epoch*len(dataloader)+local_step)
+                optimizer.step()
             
-            total_loss += total_batch_loss.item()
+            total_loss += float(total_batch_loss.detach().item())
             
             # 计算评估指标
             with torch.no_grad():
@@ -1392,7 +1491,7 @@ def train_ranking_model(model, dataloader, criterion, optimizer, device, epoch, 
         for k in total_metrics:
             total_metrics[k] /= local_step
     
-    return total_loss / len(dataloader) if len(dataloader) > 0 else 0, total_metrics
+    return total_loss / local_step if local_step > 0 else 0, total_metrics
 
 def evaluate_ranking_model(
     model,
@@ -1410,9 +1509,13 @@ def evaluate_ranking_model(
     num_batches = 0
     use_multitask_volatility = bool(config.get('use_multitask_volatility', False))
     volatility_loss_weight = float(config.get('volatility_loss_weight', 0.2))
+    use_amp_eval = bool(config.get('use_amp_eval', config.get('use_amp', True))) and (device.type == 'cuda')
+    max_eval_batches = int(config.get('max_eval_batches_per_fold', 0) or 0)
     
     with torch.no_grad():
-        for batch in tqdm(dataloader, desc=f"Evaluating Epoch {epoch+1}"):
+        for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"Evaluating Epoch {epoch+1}"), start=1):
+            if max_eval_batches > 0 and batch_idx > max_eval_batches:
+                break
             sequences = batch['sequences'].to(device)
             targets = batch['targets'].to(device)
             vol_targets = batch.get('vol_targets', None)
@@ -1426,44 +1529,45 @@ def evaluate_ranking_model(
                 sequences = sequences.clone()
                 sequences[:, :, :, ablation_feature_indices] = 0
             
-            # 模型预测
-            outputs = model(
-                sequences,
-                stock_indices=stock_indices,
-                stock_valid_mask=stock_valid_mask,
-                return_aux=use_multitask_volatility,
-            )
-            if use_multitask_volatility:
-                outputs, vol_outputs = outputs
-            else:
-                vol_outputs = None
-            
-            # 应用mask
-            masked_outputs = outputs * masks + (1 - masks) * (-1e9)
-            masked_targets = targets * masks
-            
-            # 计算损失
-            batch_loss = None
-            batch_size = sequences.size(0)
-            
-            for i in range(batch_size):
-                mask = masks[i]
-                valid_indices = mask.nonzero().squeeze()
+            with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=use_amp_eval):
+                # 模型预测
+                outputs = model(
+                    sequences,
+                    stock_indices=stock_indices,
+                    stock_valid_mask=stock_valid_mask,
+                    return_aux=use_multitask_volatility,
+                )
+                if use_multitask_volatility:
+                    outputs, vol_outputs = outputs
+                else:
+                    vol_outputs = None
                 
-                if valid_indices.numel() == 0:
-                    continue
+                # 应用mask
+                masked_outputs = outputs * masks + (1 - masks) * (-1e9)
+                masked_targets = targets * masks
+                
+                # 计算损失
+                batch_loss = None
+                batch_size = sequences.size(0)
+                
+                for i in range(batch_size):
+                    mask = masks[i]
+                    valid_indices = mask.nonzero().squeeze()
                     
-                if valid_indices.dim() == 0:
-                    valid_indices = valid_indices.unsqueeze(0)
-                
-                valid_pred = masked_outputs[i][valid_indices]
-                valid_true = masked_targets[i][valid_indices]
+                    if valid_indices.numel() == 0:
+                        continue
+                        
+                    if valid_indices.dim() == 0:
+                        valid_indices = valid_indices.unsqueeze(0)
+                    
+                    valid_pred = masked_outputs[i][valid_indices]
+                    valid_true = masked_targets[i][valid_indices]
 
-                valid_pred_for_loss, valid_target_for_loss = transform_targets_for_loss(valid_pred, valid_true)
-                if len(valid_pred_for_loss) > 1:
-                    # 使用实际收益率进行 loss 验证
-                    loss = criterion(valid_pred_for_loss.unsqueeze(0), valid_target_for_loss.unsqueeze(0))
-                    batch_loss = batch_loss + loss if batch_loss is not None else loss
+                    valid_pred_for_loss, valid_target_for_loss = transform_targets_for_loss(valid_pred, valid_true)
+                    if len(valid_pred_for_loss) > 1:
+                        # 使用实际收益率进行 loss 验证
+                        loss = criterion(valid_pred_for_loss.unsqueeze(0), valid_target_for_loss.unsqueeze(0))
+                        batch_loss = batch_loss + loss if batch_loss is not None else loss
             
             rank_loss = None
             if batch_loss is not None:
@@ -1947,6 +2051,8 @@ def main():
     # 丢弃nan数据
     train_data = train_data.dropna(subset=features)
     val_data = val_data.dropna(subset=features)
+    dump_factor_artifacts('train', train_data, features, output_dir)
+    dump_factor_artifacts('val', val_data, features, output_dir)
 
     histogram_features = features[:max(0, int(config.get('factor_histogram_max_features', 0)))]
     raw_train_hist_frame = train_data[histogram_features].copy() if histogram_features else None
@@ -2047,6 +2153,9 @@ def main():
         weight_decay=float(config.get('weight_decay', 1e-5)),
     )
     scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.2, total_iters=config['num_epochs'])
+    use_amp = bool(config.get('use_amp', True)) and (device.type == 'cuda')
+    scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
+    print(f"AMP 混合精度训练: {'开启' if use_amp else '关闭'}")
     
     # 8. 排序模型训练
     if is_train:
@@ -2067,7 +2176,16 @@ def main():
             
             # 训练
             train_loss, train_metrics = train_ranking_model(
-                model, train_loader, criterion, optimizer, device, epoch, writer, strategy_candidates
+                model,
+                train_loader,
+                criterion,
+                optimizer,
+                device,
+                epoch,
+                writer,
+                strategy_candidates,
+                use_amp=use_amp,
+                scaler=scaler,
             )
             
             print(f"Train Loss: {train_loss:.4f}")

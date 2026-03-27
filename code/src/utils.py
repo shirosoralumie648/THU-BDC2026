@@ -83,6 +83,33 @@ def _safe_feature_name(name):
     return safe
 
 
+def _resolve_collision_safe_feature_names(source_names, prefix):
+    """
+    生成无冲突特征名。
+    为兼容旧训练结果：冲突组中“最后一个”保留基础名，其余早期项追加 __dup{i} 后缀。
+    """
+    if not source_names:
+        return []
+
+    base_names = [f'{prefix}{_safe_feature_name(name)}' for name in source_names]
+    remaining_counts = {}
+    for base in base_names:
+        remaining_counts[base] = remaining_counts.get(base, 0) + 1
+
+    seen_counts = {}
+    resolved = []
+    for base in base_names:
+        remaining_counts[base] -= 1
+        if remaining_counts[base] == 0:
+            resolved.append(base)
+            continue
+
+        duplicate_idx = seen_counts.get(base, 0) + 1
+        seen_counts[base] = duplicate_idx
+        resolved.append(f'{base}__dup{duplicate_idx}')
+    return resolved
+
+
 def _normalize_stock_code_series(series):
     s = series.astype(str).str.strip()
     s = s.str.split('.').str[-1]
@@ -320,18 +347,22 @@ def _add_cross_sectional_rank_features(
     )
 
     if bool(config.get('use_cross_sectional_rank_features', True)):
-        for col in rank_sources:
-            if col not in out.columns:
-                continue
-            rank_col = f'cs_rank_{_safe_feature_name(col)}'
+        present_rank_sources = [col for col in rank_sources if col in out.columns]
+        rank_feature_names = _resolve_collision_safe_feature_names(
+            present_rank_sources,
+            prefix='cs_rank_',
+        )
+        for col, rank_col in zip(present_rank_sources, rank_feature_names):
             out[rank_col] = out.groupby(date_col)[col].rank(pct=True).astype(np.float32)
             extra_features.append(rank_col)
 
     if bool(config.get('use_industry_relative_z_features', True)) and industry_bucket_col and industry_bucket_col in out.columns:
-        for col in industry_sources:
-            if col not in out.columns:
-                continue
-            ind_col = f'ind_z_{_safe_feature_name(col)}'
+        present_industry_sources = [col for col in industry_sources if col in out.columns]
+        industry_feature_names = _resolve_collision_safe_feature_names(
+            present_industry_sources,
+            prefix='ind_z_',
+        )
+        for col, ind_col in zip(present_industry_sources, industry_feature_names):
             means = out.groupby([date_col, industry_bucket_col])[col].transform('mean')
             stds = out.groupby([date_col, industry_bucket_col])[col].transform('std').replace(0.0, np.nan)
             out[ind_col] = ((out[col] - means) / (stds + 1e-12)).replace([np.inf, -np.inf], np.nan).fillna(0.0).astype(np.float32)
