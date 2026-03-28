@@ -1,0 +1,364 @@
+version: 1
+project: thu-bdc2026
+
+runtime:
+  timezone: Asia/Shanghai
+  trading_calendar: CN_STOCK
+  default_cutoff_time: "15:00:00+08:00"
+  leak_protection:
+    enabled: true
+    enforce_available_time: true
+    policy: "available_time <= trade_date_cutoff"
+
+builder_defaults:
+  hf_daily_aggregation:
+    tail_minutes: 30
+    min_bars: 10
+    resample_minutes:
+      - 5
+      - 15
+      - 30
+    skip_raw: false
+    force_suffix: false
+
+engines:
+  expression:
+    helpers:
+      - shift
+      - diff
+      - pct_change
+      - rolling_mean
+      - rolling_std
+      - rolling_sum
+      - rolling_rank
+      - cs_rank
+      - cs_zscore
+      - log1p
+      - clip
+      - where
+  intraday_aggregate:
+    time_key: ts
+    group_key:
+      - instrument_id
+      - trade_date
+  macro_asof_join:
+    left_key: trade_date
+    right_key: available_time
+    method: backward
+  meta_expression:
+    description: "factor from factors"
+
+layer_order:
+  - L1_base_daily
+  - L1_base_hf2d
+  - L1_base_macro
+  - L2_meta_factor
+
+inputs:
+  market_bar_1d:
+    table: market_bar_1d
+    key:
+      - trade_date
+      - instrument_id
+  market_bar_1m:
+    table: market_bar_1m
+    key:
+      - ts
+      - instrument_id
+  macro_series:
+    table: macro_series
+    key:
+      - series_id
+      - observation_date
+      - available_time
+  instrument_dim:
+    table: instrument_dim
+    key:
+      - instrument_id
+
+factor_nodes:
+  - id: ret_1d
+    layer: L1_base_daily
+    domain: alpha
+    frequency: 1d
+    source: market_bar_1d
+    dependencies: []
+    availability:
+      available_time_rule: "trade_date 15:00:00+08:00"
+    compute:
+      engine: expression
+      group_by: instrument_id
+      expression: "pct_change(close, 1)"
+    output:
+      column: f_ret_1d
+      dtype: float32
+
+  - id: ret_5d
+    layer: L1_base_daily
+    domain: alpha
+    frequency: 1d
+    source: market_bar_1d
+    dependencies: []
+    availability:
+      available_time_rule: "trade_date 15:00:00+08:00"
+    compute:
+      engine: expression
+      group_by: instrument_id
+      expression: "pct_change(close, 5)"
+    output:
+      column: f_ret_5d
+      dtype: float32
+
+  - id: vol_20d
+    layer: L1_base_daily
+    domain: risk
+    frequency: 1d
+    source: market_bar_1d
+    dependencies:
+      - ret_1d
+    availability:
+      available_time_rule: "trade_date 15:00:00+08:00"
+    compute:
+      engine: expression
+      group_by: instrument_id
+      expression: "rolling_std(f_ret_1d, 20)"
+    output:
+      column: f_vol_20d
+      dtype: float32
+
+  - id: turnover_20d_mean
+    layer: L1_base_daily
+    domain: liquidity
+    frequency: 1d
+    source: market_bar_1d
+    dependencies: []
+    compute:
+      engine: expression
+      group_by: instrument_id
+      expression: "rolling_mean(turnover, 20)"
+    output:
+      column: f_turnover_20d_mean
+      dtype: float32
+
+  - id: hf_realized_vol_1d
+    layer: L1_base_hf2d
+    domain: microstructure
+    frequency: 1d
+    source: market_bar_1m
+    dependencies: []
+    availability:
+      available_time_rule: "trade_date 15:05:00+08:00"
+    compute:
+      engine: intraday_aggregate
+      expression: "sqrt(sum((diff(log(close)))^2))"
+      min_bars: 20
+    output:
+      column: f_hf_realized_vol_1d
+      dtype: float32
+
+  - id: hf_tail_ret_30m
+    layer: L1_base_hf2d
+    domain: microstructure
+    frequency: 1d
+    source: market_bar_1m
+    dependencies: []
+    availability:
+      available_time_rule: "trade_date 15:05:00+08:00"
+    compute:
+      engine: intraday_aggregate
+      expression: "(last(close, 30m) - first(close, 30m)) / first(close, 30m)"
+      min_bars: 20
+    output:
+      column: f_hf_tail_ret_30m
+      dtype: float32
+
+  - id: hf_tail_amount_share_30m
+    layer: L1_base_hf2d
+    domain: microstructure
+    frequency: 1d
+    source: market_bar_1m
+    dependencies: []
+    availability:
+      available_time_rule: "trade_date 15:05:00+08:00"
+    compute:
+      engine: intraday_aggregate
+      expression: "sum(amount, last=30m) / sum(amount, full_day)"
+      min_bars: 20
+    output:
+      column: f_hf_tail_amount_share_30m
+      dtype: float32
+
+  - id: macro_m2_yoy_asof
+    layer: L1_base_macro
+    domain: macro
+    frequency: 1d
+    source: macro_series
+    dependencies: []
+    availability:
+      available_time_rule: "as_of_join by available_time"
+    compute:
+      engine: macro_asof_join
+      series_id: m2_yoy
+      fill_method: forward
+      max_staleness_days: 120
+    output:
+      column: f_macro_m2_yoy
+      dtype: float32
+
+  - id: macro_shibor_3m_asof
+    layer: L1_base_macro
+    domain: macro
+    frequency: 1d
+    source: macro_series
+    dependencies: []
+    availability:
+      available_time_rule: "as_of_join by available_time"
+    compute:
+      engine: macro_asof_join
+      series_id: shibor_3m
+      fill_method: forward
+      max_staleness_days: 20
+    output:
+      column: f_macro_shibor_3m
+      dtype: float32
+
+  - id: macro_usdcny_asof
+    layer: L1_base_macro
+    domain: macro
+    frequency: 1d
+    source: macro_series
+    dependencies: []
+    availability:
+      available_time_rule: "as_of_join by available_time"
+    compute:
+      engine: macro_asof_join
+      series_id: usdcny
+      fill_method: forward
+      max_staleness_days: 10
+    output:
+      column: f_macro_usdcny
+      dtype: float32
+
+  - id: momentum_quality_score
+    layer: L2_meta_factor
+    domain: meta
+    frequency: 1d
+    source: factor_graph
+    dependencies:
+      - ret_5d
+      - vol_20d
+      - hf_tail_ret_30m
+    compute:
+      engine: meta_expression
+      expression: "0.5 * cs_zscore(f_ret_5d) - 0.3 * cs_zscore(f_vol_20d) + 0.2 * cs_zscore(f_hf_tail_ret_30m)"
+    output:
+      column: f_momentum_quality_score
+      dtype: float32
+
+  - id: liquidity_stress_score
+    layer: L2_meta_factor
+    domain: meta
+    frequency: 1d
+    source: factor_graph
+    dependencies:
+      - turnover_20d_mean
+      - hf_tail_amount_share_30m
+      - macro_shibor_3m_asof
+    compute:
+      engine: meta_expression
+      expression: "0.4 * cs_zscore(f_turnover_20d_mean) + 0.3 * cs_zscore(f_hf_tail_amount_share_30m) + 0.3 * cs_zscore(f_macro_shibor_3m)"
+    output:
+      column: f_liquidity_stress_score
+      dtype: float32
+
+  - id: regime_risk_on
+    layer: L2_meta_factor
+    domain: meta
+    frequency: 1d
+    source: factor_graph
+    dependencies:
+      - macro_m2_yoy_asof
+      - macro_usdcny_asof
+      - momentum_quality_score
+    compute:
+      engine: meta_expression
+      expression: "0.4 * cs_zscore(f_macro_m2_yoy) - 0.3 * cs_zscore(f_macro_usdcny) + 0.3 * f_momentum_quality_score"
+    output:
+      column: f_regime_risk_on
+      dtype: float32
+
+factor_views:
+  - id: factor_long_v1
+    layout: long
+    key:
+      - trade_date
+      - instrument_id
+      - factor_name
+    value_column: factor_value
+    include_layers:
+      - L1_base_daily
+      - L1_base_hf2d
+      - L1_base_macro
+      - L2_meta_factor
+    metadata_columns:
+      - run_id
+      - factor_version
+      - source_version
+      - quality_flag
+
+  - id: factor_wide_train_v1
+    layout: wide
+    key:
+      - trade_date
+      - instrument_id
+    include_factor_columns:
+      - f_ret_1d
+      - f_ret_5d
+      - f_vol_20d
+      - f_turnover_20d_mean
+      - f_hf_realized_vol_1d
+      - f_hf_tail_ret_30m
+      - f_hf_tail_amount_share_30m
+      - f_macro_m2_yoy
+      - f_macro_shibor_3m
+      - f_macro_usdcny
+      - f_momentum_quality_score
+      - f_liquidity_stress_score
+      - f_regime_risk_on
+    null_policy:
+      fill_method: by_factor_default
+      default_value: 0.0
+      max_null_ratio_per_factor: 0.2
+    export:
+      parquet_uri: "data/feature/wide/feature_set_version={feature_set_version}/trade_date={trade_date}/part-{run_id}.parquet"
+      csv_compat_uri: "data/datasets/features/train_features_{feature_set_version}.csv"
+
+quality_gates:
+  dependency_validation:
+    no_cycles: true
+    require_declared_dependencies: true
+  data_validation:
+    min_stock_coverage_ratio: 0.8
+    max_nan_ratio_per_factor: 0.2
+    max_inf_ratio_per_factor: 0.0
+    winsorize:
+      enabled: true
+      by_date: true
+      method: mad
+      n: 5.0
+  anti_leakage:
+    require_asof_join_for_macro: true
+    block_future_window_usage: true
+
+build_manifest:
+  output_uri: "data/manifests/factor_build/{feature_set_version}/{run_date}/{run_id}.json"
+  required_fields:
+    - run_id
+    - feature_set_version
+    - factor_fingerprint
+    - input_data_versions
+    - node_status
+    - row_count
+    - quality_summary
+    - output_paths
+    - code_version

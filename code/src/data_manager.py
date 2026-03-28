@@ -152,6 +152,157 @@ def resolve_dataset_path(config: Dict, filename: str, *, for_write: bool = False
     return candidates[0]
 
 
+def _is_truthy(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
+
+
+def resolve_dataset_build_manifest_path(config: Dict, *, filename: str = 'train.csv') -> str:
+    override_path = str(config.get('dataset_build_manifest_path', '')).strip()
+    if override_path:
+        return os.path.abspath(override_path)
+    dataset_path = resolve_dataset_path(config, filename, for_write=False)
+    return os.path.join(
+        os.path.dirname(os.path.abspath(dataset_path)),
+        'data_manifest_dataset_build.json',
+    )
+
+
+def load_train_dataset_from_build_manifest(
+    config: Dict,
+    feature_pipeline: Dict,
+) -> Tuple[Optional[str], Dict]:
+    strict_mode = _is_truthy(config.get('dataset_manifest_strict', False))
+    info = {
+        'enabled': _is_truthy(config.get('use_dataset_build_manifest', True)),
+        'strict': strict_mode,
+        'used': False,
+        'manifest_path': '',
+        'train_path': '',
+        'build_id': '',
+        'feature_set_version': '',
+        'factor_fingerprint': '',
+        'warnings': [],
+        'errors': [],
+    }
+    if not info['enabled']:
+        return None, info
+
+    manifest_path = resolve_dataset_build_manifest_path(config, filename='train.csv')
+    info['manifest_path'] = manifest_path
+    if not os.path.exists(manifest_path):
+        msg = f'未找到 dataset build manifest: {manifest_path}'
+        if strict_mode:
+            raise FileNotFoundError(msg)
+        info['warnings'].append(msg)
+        return None, info
+
+    try:
+        with open(manifest_path, 'r', encoding='utf-8') as f:
+            payload = json.load(f)
+    except Exception as exc:
+        msg = f'读取 dataset build manifest 失败: {manifest_path} | {exc}'
+        if strict_mode:
+            raise ValueError(msg) from exc
+        info['errors'].append(msg)
+        return None, info
+
+    if not isinstance(payload, dict):
+        msg = f'dataset build manifest 顶层必须为对象: {manifest_path}'
+        if strict_mode:
+            raise ValueError(msg)
+        info['errors'].append(msg)
+        return None, info
+
+    action = str(payload.get('action', '')).strip()
+    if action and action != 'build_dataset':
+        info['warnings'].append(f'manifest action 不是 build_dataset: {action}')
+
+    params = payload.get('params', {})
+    if not isinstance(params, dict):
+        params = {}
+
+    outputs = payload.get('outputs', {})
+    if not isinstance(outputs, dict):
+        outputs = {}
+    train_snapshot = outputs.get('train_csv', {})
+    if not isinstance(train_snapshot, dict):
+        train_snapshot = {}
+
+    train_path = str(train_snapshot.get('path', '')).strip()
+    if train_path:
+        train_path = os.path.abspath(train_path)
+    info['train_path'] = train_path
+    info['build_id'] = str(payload.get('build_id', '') or params.get('build_id', '')).strip()
+    info['feature_set_version'] = str(
+        payload.get('feature_set_version', '') or params.get('feature_set_version', '')
+    ).strip()
+    info['factor_fingerprint'] = str(
+        payload.get('factor_fingerprint', '') or params.get('factor_fingerprint', '')
+    ).strip()
+
+    if not train_path:
+        msg = f'manifest 缺少 outputs.train_csv.path: {manifest_path}'
+        if strict_mode:
+            raise ValueError(msg)
+        info['errors'].append(msg)
+        return None, info
+    if not os.path.exists(train_path):
+        msg = f'manifest 指向的训练集文件不存在: {train_path}'
+        if strict_mode:
+            raise FileNotFoundError(msg)
+        info['errors'].append(msg)
+        return None, info
+
+    expected_feature_set_version = str(config.get('expected_feature_set_version', '')).strip()
+    expected_factor_fingerprint = str(config.get('expected_factor_fingerprint', '')).strip()
+    require_manifest_fingerprint = _is_truthy(config.get('dataset_manifest_require_factor_fingerprint', False))
+
+    if expected_feature_set_version:
+        if not info['feature_set_version']:
+            info['errors'].append(
+                '配置要求 expected_feature_set_version，但 manifest 未包含 feature_set_version'
+            )
+        elif info['feature_set_version'] != expected_feature_set_version:
+            info['errors'].append(
+                f'feature_set_version 不一致: manifest={info["feature_set_version"]}, '
+                f'expected={expected_feature_set_version}'
+            )
+
+    pipeline_factor_fingerprint = str(feature_pipeline.get('factor_fingerprint', '')).strip()
+    if require_manifest_fingerprint and (not info['factor_fingerprint']):
+        info['errors'].append('配置要求 manifest 包含 factor_fingerprint，但当前缺失')
+    if expected_factor_fingerprint:
+        if not info['factor_fingerprint']:
+            info['errors'].append('配置要求 expected_factor_fingerprint，但 manifest 未包含 factor_fingerprint')
+        elif info['factor_fingerprint'] != expected_factor_fingerprint:
+            info['errors'].append(
+                f'manifest factor_fingerprint 与 expected_factor_fingerprint 不一致: '
+                f'{info["factor_fingerprint"]} != {expected_factor_fingerprint}'
+            )
+        if pipeline_factor_fingerprint and (pipeline_factor_fingerprint != expected_factor_fingerprint):
+            info['errors'].append(
+                f'当前激活因子指纹与 expected_factor_fingerprint 不一致: '
+                f'{pipeline_factor_fingerprint} != {expected_factor_fingerprint}'
+            )
+
+    if info['factor_fingerprint'] and pipeline_factor_fingerprint:
+        if info['factor_fingerprint'] != pipeline_factor_fingerprint:
+            info['errors'].append(
+                f'manifest 因子指纹与当前激活因子指纹不一致: '
+                f'{info["factor_fingerprint"]} != {pipeline_factor_fingerprint}'
+            )
+
+    if info['errors'] and strict_mode:
+        raise ValueError('dataset build manifest 校验失败:\n- ' + '\n- '.join(info['errors']))
+
+    info['used'] = True
+    return train_path, info
+
+
 def _resolve_join_column(df: pd.DataFrame, preferred: str, candidates: Iterable[str]) -> Optional[str]:
     preferred = str(preferred or '').strip()
     if preferred and preferred in df.columns:
@@ -304,9 +455,18 @@ def load_market_dataset(
     dtype: Optional[Dict] = None,
 ) -> Tuple[pd.DataFrame, str]:
     dataset_path = resolve_dataset_path(config, filename, for_write=False)
+    return load_market_dataset_from_path(config, dataset_path, dtype=dtype)
+
+
+def load_market_dataset_from_path(
+    config: Dict,
+    dataset_path: str,
+    *,
+    dtype: Optional[Dict] = None,
+) -> Tuple[pd.DataFrame, str]:
+    dataset_path = os.path.abspath(str(dataset_path))
     if not os.path.exists(dataset_path):
-        candidates = resolve_dataset_candidates(config, filename)
-        raise FileNotFoundError(f'未找到数据文件: {dataset_path} | candidates={candidates}')
+        raise FileNotFoundError(f'未找到数据文件: {dataset_path}')
     df = pd.read_csv(dataset_path, dtype=dtype)
     merged_df, hf_meta = merge_hf_daily_factors(df, config)
     if hf_meta.get('enabled') and (not hf_meta.get('used', False)):
