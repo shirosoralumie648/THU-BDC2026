@@ -22,7 +22,10 @@ class BaostockDailyAdapter:
         if extra_symbols:
             return [_normalize_symbol(symbol) for symbol in extra_symbols if str(symbol).strip()]
 
-        rs = bs.query_hs300_stocks(date=str(request.end or '').strip())
+        index_date = ''
+        if isinstance(request.extra, dict):
+            index_date = str(request.extra.get('index_date', '') or '').strip()
+        rs = bs.query_hs300_stocks(date=index_date or str(request.end or '').strip())
         rows = []
         while rs.error_code == '0' and rs.next():
             rows.append(rs.get_row_data())

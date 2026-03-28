@@ -48,11 +48,27 @@ class IngestionService:
     def get_job(self, job_id: str):
         return self.job_store.get(job_id)
 
+    def create_and_run(self, request):
+        job = self.create_job(request)
+        return self.run_job(job.job_id)
+
     def run_job(self, job_id: str):
         job = self.get_job(job_id)
         spec = self.specs[job.request.dataset]
         adapter = self.adapters[spec.adapter_name]
         return self.runner.run(job, spec, adapter)
+
+    def load_manifest(self, job_or_id):
+        if isinstance(job_or_id, str):
+            job = self.get_job(job_or_id)
+            manifest_path = job.manifest_path
+        else:
+            manifest_path = getattr(job_or_id, 'manifest_path', '')
+        if not manifest_path:
+            raise ValueError('manifest path is empty')
+        with open(manifest_path, 'r', encoding='utf-8') as f:
+            payload = json.load(f)
+        return payload if isinstance(payload, dict) else {}
 
     def replay_job(self, job_id: str):
         prior = self.get_job(job_id)

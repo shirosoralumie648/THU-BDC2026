@@ -32,6 +32,9 @@ from data_manager import resolve_data_root
 from data_manager import resolve_dataset_path
 from data_manager import resolve_dataset_write_targets
 from data_manager import save_data_manifest
+from pipeline_config import get_dataset_spec
+from pipeline_config import load_pipeline_configs
+from pipeline_config import PipelineConfigError
 
 HISTORY_FIELDS = (
     'date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg'
@@ -56,23 +59,76 @@ def parse_args() -> argparse.Namespace:
     default_output = resolve_dataset_path(config, 'stock_data.csv', for_write=True)
 
     parser = argparse.ArgumentParser(description='抓取沪深300成分股历史日线数据')
+    parser.add_argument(
+        '--pipeline-config-dir',
+        default='./config',
+        help='多源管道配置目录（含 datasets.yaml/factors.yaml/storage.yaml），默认 ./config',
+    )
+    parser.add_argument(
+        '--dataset-name',
+        default='market_bar_1d',
+        help='datasets.yaml 中的日线数据集名称，默认 market_bar_1d',
+    )
     parser.add_argument('--start-date', default='2015-01-01', help='抓取起始日期，格式 YYYY-MM-DD')
     parser.add_argument('--end-date', default=datetime.today().strftime('%Y-%m-%d'), help='抓取结束日期，格式 YYYY-MM-DD')
     parser.add_argument('--index-date', default='', help='HS300 成分股快照日期，默认使用 end-date')
     parser.add_argument('--output-path', default=default_output, help=f'输出文件路径，默认 {default_output}')
     parser.add_argument('--manifest-path', default='', help='数据清单输出路径，默认 <data_path>/data_manifest_stock_fetch.json')
 
-    parser.add_argument('--frequency', default='d', help='K 线频率，日线用 d（默认 d）')
-    parser.add_argument('--adjustflag', choices=['1', '2', '3'], default='1', help='复权方式：1后复权 2前复权 3不复权')
+    parser.add_argument('--frequency', default=None, help='K 线频率，日线用 d（默认来自 datasets.yaml 或 d）')
+    parser.add_argument('--adjustflag', choices=['1', '2', '3'], default=None, help='复权方式：1后复权 2前复权 3不复权')
 
-    parser.add_argument('--max-retries', type=int, default=3, help='单次请求最大重试次数，默认 3')
-    parser.add_argument('--retry-backoff-seconds', type=float, default=1.2, help='重试退避秒数（线性），默认 1.2')
-    parser.add_argument('--request-interval-seconds', type=float, default=0.05, help='每只股票请求后的间隔秒数，默认 0.05')
+    parser.add_argument('--max-retries', type=int, default=None, help='单次请求最大重试次数，默认来自 datasets.yaml 或 3')
+    parser.add_argument('--retry-backoff-seconds', type=float, default=None, help='重试退避秒数（线性），默认来自 datasets.yaml 或 1.2')
+    parser.add_argument('--request-interval-seconds', type=float, default=None, help='每只股票请求后的间隔秒数，默认来自 datasets.yaml 或 0.05')
     parser.add_argument('--limit-stocks', type=int, default=0, help='仅抓取前 N 只成分股（0 表示全量）')
 
     parser.add_argument('--rebuild', action='store_true', help='忽略已有文件并全量重建')
     parser.add_argument('--keep-suspended', action='store_true', help='保留 tradestatus != 1 的记录（默认过滤停牌）')
-    return parser.parse_args()
+    parser.add_argument(
+        '--legacy-direct-fetch',
+        action='store_true',
+        help='强制使用旧版脚本抓取逻辑，跳过统一 ingestion bridge',
+    )
+    args = parser.parse_args()
+
+    pipeline_validation = {'valid': False, 'errors': [], 'warnings': []}
+    dataset_defaults: Dict[str, object] = {}
+    retry_defaults: Dict[str, object] = {}
+    try:
+        pipeline_configs, report = load_pipeline_configs(
+            config_dir=args.pipeline_config_dir,
+            strict=False,
+        )
+        pipeline_validation = report.to_dict()
+        spec = get_dataset_spec(pipeline_configs, args.dataset_name)
+        source_params = spec.get('source', {}).get('params', {})
+        if isinstance(source_params, dict):
+            dataset_defaults.update(source_params)
+        global_defaults = pipeline_configs.get('datasets', {}).get('defaults', {})
+        if isinstance(global_defaults, dict):
+            retries = global_defaults.get('retries', {})
+            if isinstance(retries, dict):
+                retry_defaults.update(retries)
+    except PipelineConfigError as exc:
+        pipeline_validation['errors'].append(str(exc))
+
+    if args.frequency is None:
+        args.frequency = str(dataset_defaults.get('frequency', 'd'))
+    if args.adjustflag is None:
+        args.adjustflag = str(dataset_defaults.get('adjustflag', '1'))
+    if args.max_retries is None:
+        args.max_retries = int(retry_defaults.get('max_attempts', 3))
+    if args.retry_backoff_seconds is None:
+        args.retry_backoff_seconds = float(retry_defaults.get('backoff_seconds', 1.2))
+    if args.request_interval_seconds is None:
+        args.request_interval_seconds = float(dataset_defaults.get('request_interval_seconds', 0.05))
+
+    if str(args.adjustflag) not in {'1', '2', '3'}:
+        raise ValueError(f'adjustflag 非法: {args.adjustflag}，可选值 1/2/3')
+
+    args.pipeline_validation = pipeline_validation
+    return args
 
 
 def _resolve_path(path_str: str) -> Path:
@@ -381,6 +437,20 @@ def _save_frame(df: pd.DataFrame, output_path: str) -> None:
 def main() -> None:
     args = parse_args()
 
+    if not bool(getattr(args, 'legacy_direct_fetch', False)):
+        try:
+            from ingestion.compat import run_stock_data_bridge
+
+            bridge_result = run_stock_data_bridge(args, config_dict=config)
+            print('已通过统一 ingestion bridge 生成 stock_data.csv')
+            print(f'  - job_id: {bridge_result.get("job_id", "")}')
+            print(f'  - output: {bridge_result.get("output_path", "")}')
+            print(f'  - manifest: {bridge_result.get("manifest_path", "")}')
+            return
+        except Exception as exc:
+            print(f'统一 ingestion bridge 失败，回退旧抓取逻辑: {exc}')
+            print('=' * 72)
+
     start_date = _normalize_date(args.start_date, '--start-date')
     end_date = _normalize_date(args.end_date, '--end-date')
     if pd.to_datetime(start_date) > pd.to_datetime(end_date):
@@ -585,6 +655,8 @@ def main() -> None:
         manifest = {
             'action': 'fetch_stock_data',
             'parameters': {
+                'pipeline_config_dir': str(args.pipeline_config_dir),
+                'dataset_name': str(args.dataset_name),
                 'start_date': start_date,
                 'end_date': end_date,
                 'index_date': index_date,
@@ -623,6 +695,7 @@ def main() -> None:
                 'hs300_list_csv': build_file_snapshot(hs300_list_path, inspect_csv=True),
                 'failed_stocks_csv': build_file_snapshot(failed_path, inspect_csv=True),
             },
+            'pipeline_config_validation': args.pipeline_validation,
         }
 
         saved_manifest = save_data_manifest(

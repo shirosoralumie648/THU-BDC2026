@@ -223,6 +223,48 @@ def parse_args() -> argparse.Namespace:
     ingest_datasets = ingest_subparsers.add_parser('datasets', help='列出可抓取数据集')
     ingest_datasets.add_argument('--pipeline-config-dir', default='./config')
     ingest_datasets.add_argument('--runtime-root', default=default_ingestion_runtime_root)
+
+    default_hf_output = resolve_hf_factor_path(config) or os.path.join(resolve_data_root(config), 'hf_daily_factors.csv')
+    ingest_hf_daily = ingest_subparsers.add_parser('hf-daily', help='构建高频聚合日因子')
+    ingest_hf_daily.add_argument('--pipeline-config-dir', default='./config')
+    ingest_hf_daily.add_argument('--runtime-root', default=default_ingestion_runtime_root)
+    ingest_hf_daily.add_argument('--dataset-name', default='market_bar_1m')
+    ingest_hf_daily.add_argument('--input', action='append', default=[])
+    ingest_hf_daily.add_argument('--output', default=default_hf_output)
+    ingest_hf_daily.add_argument('--manifest-path', default='')
+    ingest_hf_daily.add_argument('--resample-minutes', default='')
+    ingest_hf_daily.add_argument('--tail-minutes', type=int, default=None)
+    ingest_hf_daily.add_argument('--min-bars', type=int, default=None)
+    ingest_hf_daily.add_argument('--skip-raw', action='store_true')
+    ingest_hf_daily.add_argument('--force-suffix', action='store_true')
+
+    ingest_factor_graph = ingest_subparsers.add_parser('factor-graph', help='执行因子图构建')
+    ingest_factor_graph.add_argument('--pipeline-config-dir', default='./config')
+    ingest_factor_graph.add_argument('--runtime-root', default=default_ingestion_runtime_root)
+    ingest_factor_graph.add_argument('--feature-set-version', default='v1')
+    ingest_factor_graph.add_argument('--base-input', default=resolve_dataset_path(config, 'stock_data.csv', for_write=False))
+    ingest_factor_graph.add_argument('--hf-daily-input', default=default_hf_output)
+    ingest_factor_graph.add_argument('--hf-minute-input', default='')
+    ingest_factor_graph.add_argument('--macro-input', default='')
+    ingest_factor_graph.add_argument('--output', default='')
+    ingest_factor_graph.add_argument('--manifest-path', default='')
+    ingest_factor_graph.add_argument('--run-id', default='')
+    ingest_factor_graph.add_argument('--strict', action='store_true')
+
+    ingest_factor_pipeline = ingest_subparsers.add_parser('factor-pipeline', help='串联高频日因子与因子图构建')
+    ingest_factor_pipeline.add_argument('--pipeline-config-dir', default='./config')
+    ingest_factor_pipeline.add_argument('--runtime-root', default=default_ingestion_runtime_root)
+    ingest_factor_pipeline.add_argument('--feature-set-version', default='v1')
+    ingest_factor_pipeline.add_argument('--base-input', required=True)
+    ingest_factor_pipeline.add_argument('--hf-minute-input', default='')
+    ingest_factor_pipeline.add_argument('--hf-daily-input', default='')
+    ingest_factor_pipeline.add_argument('--macro-input', default='')
+    ingest_factor_pipeline.add_argument(
+        '--output-dir',
+        default=os.path.join(resolve_data_root(config), 'derived'),
+    )
+    ingest_factor_pipeline.add_argument('--run-id', default='')
+    ingest_factor_pipeline.add_argument('--strict', action='store_true')
     return parser.parse_args()
 
 
@@ -701,6 +743,67 @@ def command_ingest_replay(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_ingest_hf_daily(args: argparse.Namespace) -> int:
+    from ingestion.pipeline_service import FactorPipelineService
+
+    service = FactorPipelineService(config_dir=args.pipeline_config_dir, runtime_root=args.runtime_root)
+    result = service.build_hf_daily(
+        input_paths=list(args.input or []),
+        output_path=str(args.output),
+        manifest_path=str(args.manifest_path or ''),
+        dataset_name=str(args.dataset_name),
+        resample_minutes=str(args.resample_minutes or ''),
+        tail_minutes=args.tail_minutes,
+        min_bars=args.min_bars,
+        skip_raw=bool(args.skip_raw),
+        force_suffix=bool(args.force_suffix),
+    )
+    print(f'hf_daily_output={result["output"]}')
+    print(f'hf_daily_manifest={result["manifest"]}')
+    return 0
+
+
+def command_ingest_factor_graph(args: argparse.Namespace) -> int:
+    from ingestion.pipeline_service import FactorPipelineService
+
+    service = FactorPipelineService(config_dir=args.pipeline_config_dir, runtime_root=args.runtime_root)
+    output_path = str(args.output or os.path.join(resolve_data_root(config), 'factor_graph.csv'))
+    result = service.build_factor_graph(
+        base_input=str(args.base_input),
+        hf_daily_input=str(args.hf_daily_input or ''),
+        hf_minute_input=str(args.hf_minute_input or ''),
+        macro_input=str(args.macro_input or ''),
+        output_path=output_path,
+        manifest_path=str(args.manifest_path or ''),
+        feature_set_version=str(args.feature_set_version),
+        run_id=str(args.run_id or ''),
+        strict=bool(args.strict),
+    )
+    print(f'factor_graph_output={result["output"]}')
+    print(f'factor_graph_manifest={result["manifest"]}')
+    return 0
+
+
+def command_ingest_factor_pipeline(args: argparse.Namespace) -> int:
+    from ingestion.pipeline_service import FactorPipelineService
+
+    service = FactorPipelineService(config_dir=args.pipeline_config_dir, runtime_root=args.runtime_root)
+    result = service.run_factor_pipeline(
+        base_input=str(args.base_input),
+        hf_minute_input=str(args.hf_minute_input or ''),
+        hf_daily_input=str(args.hf_daily_input or ''),
+        macro_input=str(args.macro_input or ''),
+        output_dir=str(args.output_dir),
+        feature_set_version=str(args.feature_set_version),
+        run_id=str(args.run_id or ''),
+        strict=bool(args.strict),
+    )
+    print(f'hf_daily_output={result["hf_daily_output"]}')
+    print(f'factor_graph_output={result["factor_graph_output"]}')
+    print(f'pipeline_manifest={result["pipeline_manifest"]}')
+    return 0
+
+
 def main() -> None:
     args = parse_args()
     if args.command == 'manifest':
@@ -724,6 +827,12 @@ def main() -> None:
             raise SystemExit(command_ingest_status(args))
         if args.ingest_command == 'replay':
             raise SystemExit(command_ingest_replay(args))
+        if args.ingest_command == 'hf-daily':
+            raise SystemExit(command_ingest_hf_daily(args))
+        if args.ingest_command == 'factor-graph':
+            raise SystemExit(command_ingest_factor_graph(args))
+        if args.ingest_command == 'factor-pipeline':
+            raise SystemExit(command_ingest_factor_pipeline(args))
         raise SystemExit(f'未知 ingest 子命令: {args.ingest_command}')
     raise SystemExit(f'未知命令: {args.command}')
 

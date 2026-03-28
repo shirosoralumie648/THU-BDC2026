@@ -13,6 +13,9 @@ from data_manager import infer_existing_column
 from data_manager import normalize_stock_code_series
 from data_manager import resolve_data_root
 from data_manager import save_data_manifest
+from pipeline_config import derive_hf_builder_defaults
+from pipeline_config import load_pipeline_configs
+from pipeline_config import PipelineConfigError
 
 
 def _resolve_path(path_str: str) -> str:
@@ -83,10 +86,20 @@ def _collect_input_paths(inputs: List[str], input_globs: List[str]) -> List[str]
     return dedup
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     default_output = os.path.join(resolve_data_root(config), 'hf_daily_factors.csv')
 
     parser = argparse.ArgumentParser(description='将高频(日内)数据聚合为日级因子表')
+    parser.add_argument(
+        '--pipeline-config-dir',
+        default='./config',
+        help='多源管道配置目录（含 datasets.yaml/factors.yaml/storage.yaml），默认 ./config',
+    )
+    parser.add_argument(
+        '--dataset-name',
+        default='market_bar_1m',
+        help='datasets.yaml 中的分钟数据集名称，仅用于配置校验与记录，默认 market_bar_1m',
+    )
     parser.add_argument(
         '--input',
         action='append',
@@ -113,11 +126,42 @@ def parse_args() -> argparse.Namespace:
         default='',
         help='可选重采样周期（分钟），逗号分隔，如 "5,15,30"；留空表示不额外重采样',
     )
-    parser.add_argument('--skip-raw', action='store_true', help='不输出原始频率版本，仅输出重采样版本')
-    parser.add_argument('--force-suffix', action='store_true', help='即使单版本也给因子列添加后缀')
-    parser.add_argument('--tail-minutes', type=int, default=30, help='尾盘窗口分钟数（默认 30）')
-    parser.add_argument('--min-bars', type=int, default=10, help='单股票单日最小bar数（默认 10）')
-    return parser.parse_args()
+    parser.add_argument('--skip-raw', action='store_true', default=None, help='不输出原始频率版本，仅输出重采样版本')
+    parser.add_argument('--force-suffix', action='store_true', default=None, help='即使单版本也给因子列添加后缀')
+    parser.add_argument('--tail-minutes', type=int, default=None, help='尾盘窗口分钟数（默认来自 factors.yaml 或 30）')
+    parser.add_argument('--min-bars', type=int, default=None, help='单股票单日最小bar数（默认来自 factors.yaml 或 10）')
+    args = parser.parse_args(argv)
+
+    hf_defaults: Dict[str, object] = {}
+    pipeline_validation = {'valid': False, 'errors': [], 'warnings': []}
+    try:
+        pipeline_configs, report = load_pipeline_configs(
+            config_dir=args.pipeline_config_dir,
+            strict=False,
+        )
+        pipeline_validation = report.to_dict()
+        hf_defaults = derive_hf_builder_defaults(pipeline_configs.get('factors', {}))
+        datasets_cfg = pipeline_configs.get('datasets', {}).get('datasets', {})
+        if args.dataset_name not in datasets_cfg:
+            pipeline_validation['warnings'].append(
+                f'datasets.yaml 未找到 dataset `{args.dataset_name}`，将继续执行并使用 CLI 输入'
+            )
+    except PipelineConfigError as exc:
+        pipeline_validation['errors'].append(str(exc))
+
+    if args.tail_minutes is None:
+        args.tail_minutes = int(hf_defaults.get('tail_minutes') or 30)
+    if args.min_bars is None:
+        args.min_bars = int(hf_defaults.get('min_bars') or 10)
+    if (not str(args.resample_minutes).strip()) and hf_defaults.get('resample_minutes'):
+        args.resample_minutes = ','.join(str(v) for v in hf_defaults.get('resample_minutes', []))
+    if args.skip_raw is None:
+        args.skip_raw = bool(hf_defaults.get('skip_raw', False))
+    if args.force_suffix is None:
+        args.force_suffix = bool(hf_defaults.get('force_suffix', False))
+
+    args.pipeline_validation = pipeline_validation
+    return args
 
 
 def _normalize_source_data(
@@ -362,8 +406,8 @@ def _merge_daily_tables(daily_tables: List[pd.DataFrame]) -> pd.DataFrame:
     return merged
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: Optional[List[str]] = None) -> None:
+    args = parse_args(argv)
     input_paths = _collect_input_paths(args.input, args.input_glob)
     if not input_paths:
         raise ValueError('至少需要通过 --input 或 --input-glob 提供一个输入文件')
@@ -459,6 +503,8 @@ def main() -> None:
         'inputs': [build_file_snapshot(path, inspect_csv=True) for path in input_paths],
         'output': build_file_snapshot(output_path, inspect_csv=True),
         'params': {
+            'pipeline_config_dir': str(args.pipeline_config_dir),
+            'dataset_name': str(args.dataset_name),
             'stock_col': args.stock_col,
             'datetime_col': args.datetime_col,
             'price_col': args.price_col,
@@ -470,6 +516,7 @@ def main() -> None:
             'skip_raw': bool(args.skip_raw),
             'force_suffix': bool(args.force_suffix),
         },
+        'pipeline_config_validation': args.pipeline_validation,
         'sources': source_meta,
         'summary': summary,
     }

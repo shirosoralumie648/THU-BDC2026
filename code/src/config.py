@@ -185,6 +185,18 @@ config = {
     'prefer_structured_data_layout': False,
     'mirror_legacy_and_structured_data': True,
     'dataset_paths': {},
+    # 训练阶段可优先使用 build-dataset 生成的 manifest 定位 train.csv
+    'use_dataset_build_manifest': True,
+    # 留空时默认回退到 <train.csv 所在目录>/data_manifest_dataset_build.json
+    'dataset_build_manifest_path': '',
+    # 期望特征版本（例如 v1），留空表示不做版本匹配校验
+    'expected_feature_set_version': '',
+    # 期望因子指纹，留空表示不做显式指纹匹配
+    'expected_factor_fingerprint': '',
+    # 严格模式：manifest 不可用或校验失败直接报错，不回退
+    'dataset_manifest_strict': False,
+    # 要求 manifest 必须携带 factor_fingerprint
+    'dataset_manifest_require_factor_fingerprint': False,
 
     # 因子结果落盘（训练/推理），便于排障与复盘
     'dump_factor_artifacts': True,
