@@ -2,6 +2,8 @@
 akshare>=1.18.28
 baostock>=0.8.9
 docker>=7.1.0
+fastapi>=0.115.0
+httpx>=0.28.1
 joblib>=1.5.2
 pandas>=2.3.2
 scikit-learn>=1.7.2
@@ -12,5 +14,7 @@ ta-lib>=0.6.8
 tensorboard>=2.20.0
 tensorboardx>=2.6.4
 plotly>=5.24.0
+pyyaml>=6.0.2
 torch>=2.6.0
 tqdm>=4.67.1
+uvicorn>=0.32.0
