@@ -1,1 +1,3 @@
-__all__ = []
+from ingestion.api.app import create_app
+
+__all__ = ['create_app']
