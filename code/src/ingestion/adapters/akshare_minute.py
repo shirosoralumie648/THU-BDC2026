@@ -94,3 +94,7 @@ class AkshareMinuteAdapter:
             return empty_frame(CANONICAL_COLUMNS)
         result = pd.concat(frames, ignore_index=True)
         return result.sort_values(['ts', 'instrument_id']).reset_index(drop=True)
+
+
+# Backward-compatible name retained for older tests and callers.
+AkshareMinuteBarAdapter = AkshareMinuteAdapter

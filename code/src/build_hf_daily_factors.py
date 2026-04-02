@@ -130,7 +130,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument('--force-suffix', action='store_true', default=None, help='即使单版本也给因子列添加后缀')
     parser.add_argument('--tail-minutes', type=int, default=None, help='尾盘窗口分钟数（默认来自 factors.yaml 或 30）')
     parser.add_argument('--min-bars', type=int, default=None, help='单股票单日最小bar数（默认来自 factors.yaml 或 10）')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     hf_defaults: Dict[str, object] = {}
     pipeline_validation = {'valid': False, 'errors': [], 'warnings': []}

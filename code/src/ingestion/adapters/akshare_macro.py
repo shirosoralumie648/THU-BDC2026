@@ -46,6 +46,8 @@ class _AkshareMacroClient:
         if series_id == 'm2_yoy':
             return ak.macro_china_money_supply()
         if series_id == 'shibor_3m':
+            if hasattr(ak, 'macro_china_shibor_all'):
+                return ak.macro_china_shibor_all()
             return ak.rate_interbank(
                 market='上海银行同业拆借市场',
                 symbol='Shibor人民币',
@@ -121,6 +123,10 @@ class AkshareMacroAdapter:
         else:
             output['vintage'] = vintage_source.fillna('latest').astype(str)
         output['value'] = to_numeric_series(value_source)
+        if series_id == 'usdcny':
+            non_null = output['value'].dropna()
+            if not non_null.empty and non_null.gt(50).all():
+                output['value'] = output['value'] / 100.0
         output = output[CANONICAL_COLUMNS]
         output = output[output['observation_date'] != ''].reset_index(drop=True)
         if output.empty:
