@@ -7,9 +7,10 @@ services:
       - ./test/output:/app/output
       - ./temp:/app/temp
     working_dir: /app
-    # 先临时替换命令，验证GPU是否能访问
+    # Release validation path: run container-side init hook (currently no-op)
+    # and then execute predict via /app/data/run.sh.
     command: /bin/bash /app/data/run.sh
-    # 核心配置：指定NVIDIA运行时+暴露GPU
+    # Compose validation currently assumes a local NVIDIA runtime is available.
     runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all

@@ -113,12 +113,11 @@
 - 预测阶段会额外写出 `data_manifest_predict.json`，记录当前推理的数据来源。
 
 ### [get_stock_data.py](get_stock_data.py)
-数据抓取脚本（Baostock）：
-- 获取沪深300成分股；
-- 抓取历史日线数据并保存为训练所需格式；
-- 支持成分股快照日期、复权方式、重试/节流参数；
-- 支持增量补齐与全量重建；
-- 运行结束后自动输出 `data_manifest_stock_fetch.json`。
+兼容入口：通过 ingestion service 拉取日线数据：
+- 默认走 `market_bar_1d` 数据集配置；
+- 当前 provider 为 BaoStock 日线适配器；
+- 输出为 runtime root 下的 ingestion manifest 与 curated 数据文件；
+- 适合做原始数据抓取或 provider 连通性验证，不直接替代训练入口。
 
 ### [split_train_test.py](data/split_train_test.py)
 数据切分脚本：
@@ -198,7 +197,65 @@ sh train.sh
 sh test.sh
 ```
 
-说明：legacy `data/train.csv` / `data/test.csv` 仍保持兼容；当前优先推荐路径是 `pipeline config -> factor graph -> dataset build -> train/predict`。
+说明：
+- legacy `data/train.csv` / `data/test.csv` 仍保持兼容；当前优先推荐路径是 `pipeline config -> factor graph -> dataset build -> train/predict`。
+- `train.sh` / `test.sh` 会优先使用仓库内 `.venv/bin/python`；如需显式覆盖解释器，可设置 `THU_BDC_PYTHON_BIN=/path/to/python`。
+
+## Release Acceptance Commands
+
+下面这一组是当前仓库的 release gate。建议按顺序执行，并保留日志：
+
+```bash
+./.venv/bin/python code/src/manage_data.py validate-pipeline-config --config-dir ./config
+./.venv/bin/python -m unittest discover -s test -p 'test_*.py' -v
+./.venv/bin/python code/src/manage_data.py build-factor-graph \
+  --pipeline-config-dir ./config \
+  --feature-set-version v1 \
+  --base-input ./data/stock_data.csv
+./.venv/bin/python code/src/manage_data.py build-dataset \
+  --pipeline-config-dir ./config \
+  --feature-set-version v1 \
+  --base-input ./data/stock_data.csv \
+  --feature-input ./data/datasets/features/train_features_v1.csv \
+  --output-dir ./data
+sh train.sh
+sh test.sh
+./.venv/bin/python test/score_self.py
+docker compose up
+```
+
+说明：
+- `build-factor-graph` 的默认宽表输出路径来自 `config/factors.yaml`，当前默认会渲染到 `./data/datasets/features/train_features_v1.csv`。
+- `build-dataset` 会生成 dataset build manifest，训练和推理会优先读取 manifest 指向的数据文件。
+- `output/result.csv` 仍然是本地与赛事提交流程中的最终预测产物。
+
+## Release Checklist
+
+发布前至少确认以下条件：
+
+- 全量单测通过。
+- ingestion adapters 输出 canonical columns。
+- factor graph / dataset build manifest 含 `factor_fingerprint`。
+- `train.py` 与 `predict.py` 都通过 manifest-aware 路径解析读取输入数据。
+- `output/result.csv` 仍然是最终提交文件。
+
+## Known Opt-In Dependencies
+
+以下步骤依赖外部环境或在线服务，不应与纯离线训练命令混为一谈：
+
+- `uv sync` 在冷启动机器上需要联网下载 Python 包。
+- `docker buildx build` 与首次 `docker compose up` 可能需要联网拉取基础镜像。
+- `python get_stock_data.py ...` 与 `python code/src/manage_data.py ingest ...` 依赖外部数据提供方可用。
+- BaoStock / Akshare 适配器要求本地已安装相应 Python 包，且 provider 当时可访问。
+
+当前项目对 provider 没有实现统一的自适应限流层。若 BaoStock / Akshare 出现超时、限频或返回空数据，应降低请求频率并稍后重试。
+
+Docker 相关前提：
+
+- `docker compose up` 默认使用本地镜像 `bdc2026:latest`。
+- 如果你使用 `docker buildx build` 来构建该镜像，请加上 `--load`，否则 compose 可能无法看到本地镜像。
+- `docker-compose.yml` 当前按 GPU 验证路径配置，要求本机 Docker 可用且已安装 NVIDIA Container Toolkit。
+- compose 容器执行 `/app/data/run.sh`，它会先调用 `init.sh`（当前为空钩子），再执行 `test.sh`，因此镜像里必须已经包含训练好的模型产物。
 
 6) 打开 TensorBoard 查看训练过程与因子面板
 
@@ -240,12 +297,16 @@ python code/src/manage_data.py industry-index
 
 ```bash
 python get_stock_data.py \
+  --pipeline-config-dir ./config \
+  --dataset-name market_bar_1d \
   --start-date 2015-01-01 \
   --end-date 2026-03-20 \
-  --index-date 2026-03-20 \
-  --adjustflag 1 \
-  --max-retries 3
+  --runtime-root ./temp/ingestion_runtime
 ```
+
+说明：
+- 该命令会把 provider 抓取结果写到 `runtime-root` 下的 ingestion 运行目录，而不是直接覆写 `data/train.csv`。
+- 若你只是复现当前 baseline，优先使用仓库内已有的 `data/stock_data.csv` / `data/train.csv` / `data/test.csv`。
 
 高频数据聚合为日因子（示例）：
 
