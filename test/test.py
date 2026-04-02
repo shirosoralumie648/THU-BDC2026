@@ -3,6 +3,8 @@ import subprocess
 import docker
 import time
 import os
+import sys
+
 DATA_ROOT_PATH = "./"
 
 
@@ -94,7 +96,7 @@ def run_docker_compose_up(tar_name):
 # 运行score.sh命令
 def run_score(file_name):
     team_name = file_name.split("/")[-1].split(".")[0]  # 获取文件名作为team_name
-    command = f"python test/score_docker.py {team_name}"
+    command = f'"{sys.executable}" test/score_docker.py {team_name}'
     subprocess.run(command, shell=True, check=True)
     print("Started score_docker.py")
 
@@ -117,45 +119,50 @@ def run_score(file_name):
     print("file_name列已成功添加到result.csv的末尾。")
 
 
-# 输出文件路径
-input_file = "./test/tar_files_list.txt"
+def read_tar_files(input_file):
+    with open(input_file, "r", encoding="utf-8") as file:
+        return [line.strip() for line in file.readlines() if line.strip()]
 
-# 从文件中读取tar_files
-tar_files = []
-with open(input_file, "r", encoding="utf-8") as file:
-    tar_files = [line.strip() for line in file.readlines()]  # 去掉每行的换行符
 
-print("tar_files已成功从文件中读取：")
-print(tar_files)
+def main():
+    input_file = "./test/tar_files_list.txt"
+    tar_files = read_tar_files(input_file)
 
-# 打印所有找到的.tar文件
-for tar_file in tar_files:
-    print(tar_file)
-    tar_name = tar_file.split(".")[0]  # 获取文件名
-    tar_file = "./test/tars/" + tar_file  # 确保路径正确
-    try:
-        delete_file()
-    except subprocess.CalledProcessError as e:
-        print(f"Error occurred: {e}")
-    try:
-        run_docker_rm()
-    except subprocess.CalledProcessError as e:
-        print(f"Error occurred: {e}")
-    try:
-        run_docker_rmi()
-    except subprocess.CalledProcessError as e:
-        print(f"Error occurred: {e}")
-    try:
-        run_docker_load(tar_file)
-    except subprocess.CalledProcessError as e:
-        print(f"Error occurred: {e}")
-    try:
-        run_docker_compose_up(tar_name)
-    except subprocess.CalledProcessError as e:
-        print(f"Error occurred: {e}")
-    try:
-        run_score(tar_file)  # 需要传递tar_file作为参数
-    except subprocess.CalledProcessError as e:
-        print(f"Error occurred: {e}")
-    # command = f"del {tar_file}"
-    # subprocess.run(command, shell=True, check=True)
+    print("tar_files已成功从文件中读取：")
+    print(tar_files)
+
+    # 打印所有找到的.tar文件
+    for tar_file in tar_files:
+        print(tar_file)
+        tar_name = tar_file.split(".")[0]  # 获取文件名
+        tar_file = "./test/tars/" + tar_file  # 确保路径正确
+        try:
+            delete_file()
+        except subprocess.CalledProcessError as e:
+            print(f"Error occurred: {e}")
+        try:
+            run_docker_rm()
+        except subprocess.CalledProcessError as e:
+            print(f"Error occurred: {e}")
+        try:
+            run_docker_rmi()
+        except subprocess.CalledProcessError as e:
+            print(f"Error occurred: {e}")
+        try:
+            run_docker_load(tar_file)
+        except subprocess.CalledProcessError as e:
+            print(f"Error occurred: {e}")
+        try:
+            run_docker_compose_up(tar_name)
+        except subprocess.CalledProcessError as e:
+            print(f"Error occurred: {e}")
+        try:
+            run_score(tar_file)  # 需要传递tar_file作为参数
+        except subprocess.CalledProcessError as e:
+            print(f"Error occurred: {e}")
+        # command = f"del {tar_file}"
+        # subprocess.run(command, shell=True, check=True)
+
+
+if __name__ == "__main__":
+    main()

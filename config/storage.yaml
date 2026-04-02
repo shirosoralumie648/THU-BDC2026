@@ -1,0 +1,249 @@
+version: 1
+project: thu-bdc2026
+
+storage_backend:
+  type: local_filesystem
+  root: "./data"
+  temp_root: "./temp"
+  artifact_root: "./model"
+  output_root: "./output"
+  atomic_write:
+    enabled: true
+    tmp_suffix: ".tmp"
+    commit_by_rename: true
+
+naming_conventions:
+  table_name_regex: "^[a-z][a-z0-9_]*$"
+  factor_name_regex: "^f_[a-z0-9_]+$"
+  run_id_pattern: "^[0-9]{8}T[0-9]{6}Z_[a-z0-9]{8}$"
+  feature_set_version_pattern: "^v[0-9]+(\\.[0-9]+)*$"
+
+id_conventions:
+  instrument_id:
+    dtype: string
+    regex: "^[0-9]{6}$"
+    zfill: 6
+  trade_date:
+    dtype: date
+    format: "%Y-%m-%d"
+  ts:
+    dtype: datetime
+    timezone: Asia/Shanghai
+
+formats:
+  default_table_format: parquet
+  default_compression: zstd
+  parquet:
+    row_group_size: 200000
+    statistics: true
+  csv:
+    encoding: utf-8
+    newline: "\n"
+
+layers:
+  raw:
+    purpose: "immutable ingestion landing zone"
+    uri_template: "data/raw/source={source}/dataset={dataset}/ingest_date={ingest_date}/part-{run_id}.parquet"
+    partition_by:
+      - ingest_date
+    write_mode: append_only
+    retention_days: 3650
+    allow_schema_evolution: true
+
+  curated:
+    purpose: "cleaned and normalized canonical tables"
+    uri_template: "data/curated/table={table}/trade_date={trade_date}/part-{run_id}.parquet"
+    partition_by:
+      - trade_date
+    write_mode: upsert_on_key
+    merge_keys:
+      market_bar_1d:
+        - instrument_id
+        - trade_date
+      market_bar_1m:
+        - instrument_id
+        - ts
+      macro_series:
+        - series_id
+        - observation_date
+        - release_time
+    retention_days: 3650
+    allow_schema_evolution: controlled
+
+  feature_long:
+    purpose: "governance-friendly long format factor table"
+    uri_template: "data/feature/long/factor_date={trade_date}/factor_name={factor_name}/part-{run_id}.parquet"
+    partition_by:
+      - trade_date
+      - factor_name
+    write_mode: append_or_replace_partition
+    primary_key:
+      - trade_date
+      - instrument_id
+      - factor_name
+    retention_days: 3650
+
+  feature_wide:
+    purpose: "training-optimized wide format feature table"
+    uri_template: "data/feature/wide/feature_set_version={feature_set_version}/trade_date={trade_date}/part-{run_id}.parquet"
+    partition_by:
+      - feature_set_version
+      - trade_date
+    write_mode: replace_partition
+    primary_key:
+      - trade_date
+      - instrument_id
+    retention_days: 3650
+
+  datasets:
+    purpose: "assembled training and validation datasets"
+    uri_template: "data/datasets/build_id={build_id}/{split}/part-{run_id}.parquet"
+    partition_by:
+      - build_id
+      - split
+    write_mode: replace_build
+    retention_days: 3650
+
+  manifests:
+    purpose: "lineage and reproducibility metadata"
+    uri_template: "data/manifests/{pipeline}/{entity}/{run_date}/{run_id}.json"
+    write_mode: append_only
+    retention_days: 3650
+
+  artifacts:
+    purpose: "model checkpoints and logs"
+    uri_template: "model/{run_name}/{artifact_type}/{file_name}"
+    write_mode: replace_run_scoped
+    retention_days: 3650
+
+dataset_products:
+  train_input_v1:
+    source_layer: feature_wide
+    key:
+      - trade_date
+      - instrument_id
+    join_order:
+      - market_bar_1d
+      - feature_wide
+      - instrument_dim
+    output:
+      parquet_uri: "data/datasets/build_id={build_id}/train/part-{run_id}.parquet"
+      csv_compat_uri: "data/train.csv"
+    required_columns:
+      - instrument_id
+      - trade_date
+      - open
+      - close
+      - f_ret_1d
+      - f_vol_20d
+
+  test_input_v1:
+    source_layer: feature_wide
+    key:
+      - trade_date
+      - instrument_id
+    join_order:
+      - market_bar_1d
+      - feature_wide
+      - instrument_dim
+    output:
+      parquet_uri: "data/datasets/build_id={build_id}/test/part-{run_id}.parquet"
+      csv_compat_uri: "data/test.csv"
+    required_columns:
+      - instrument_id
+      - trade_date
+      - open
+      - close
+
+manifest_contracts:
+  ingestion_manifest:
+    required_fields:
+      - run_id
+      - dataset
+      - source
+      - start
+      - end
+      - status
+      - row_count
+      - schema_hash
+      - data_hash
+      - quality_summary
+      - output_paths
+      - code_version
+
+  factor_manifest:
+    required_fields:
+      - run_id
+      - feature_set_version
+      - factor_fingerprint
+      - node_execution_order
+      - input_versions
+      - anti_leakage_report
+      - quality_summary
+      - output_paths
+      - code_version
+
+  dataset_manifest:
+    required_fields:
+      - build_id
+      - run_id
+      - train_range
+      - val_range
+      - test_range
+      - feature_set_version
+      - factor_fingerprint
+      - row_counts
+      - stock_coverage
+      - output_paths
+      - code_version
+
+  model_manifest:
+    required_fields:
+      - run_name
+      - run_id
+      - build_id
+      - feature_set_version
+      - factor_fingerprint
+      - config_snapshot_path
+      - metrics
+      - best_strategy
+      - checkpoint_path
+      - code_version
+
+schema_evolution:
+  mode: add_only_by_default
+  allow_drop_columns: false
+  allow_type_widening: true
+  require_schema_registry_review:
+    - curated
+    - feature_wide
+    - datasets
+
+retention_and_gc:
+  dry_run_default: true
+  gc_order:
+    - temp
+    - raw
+    - curated
+    - feature_long
+    - feature_wide
+    - datasets
+    - manifests
+  keep_last_n_runs_per_pipeline: 200
+  keep_promoted_models_forever: true
+
+compatibility_exports:
+  enabled: true
+  exports:
+    - name: train_csv_legacy
+      from: datasets.train_input_v1
+      to: "data/train.csv"
+      format: csv
+    - name: test_csv_legacy
+      from: datasets.test_input_v1
+      to: "data/test.csv"
+      format: csv
+    - name: prediction_scores_csv
+      from: prediction_service
+      to: "output/prediction_scores.csv"
+      format: csv

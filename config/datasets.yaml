@@ -1,0 +1,419 @@
+version: 1
+project: thu-bdc2026
+
+defaults:
+  timezone: Asia/Shanghai
+  trading_calendar: CN_STOCK
+  owner: data-platform
+  run_mode: incremental
+  retries:
+    max_attempts: 3
+    backoff_seconds: 1.0
+  id_normalization:
+    instrument_id:
+      type: string
+      regex: "^[0-9]{6}$"
+      zfill: 6
+      strip_suffix: true
+    trade_date:
+      type: date
+      format: "%Y-%m-%d"
+    ts:
+      type: datetime
+      timezone: Asia/Shanghai
+
+interfaces:
+  ingestion_api:
+    create_job:
+      method: POST
+      path: /ingestion/jobs
+      payload_keys:
+        - dataset
+        - source
+        - start
+        - end
+        - mode
+        - universe
+        - adjustment
+    get_job:
+      method: GET
+      path: /ingestion/jobs/{job_id}
+    replay_job:
+      method: POST
+      path: /ingestion/replay
+      payload_keys:
+        - dataset
+        - date
+        - reason
+
+datasets:
+  market_bar_1d:
+    enabled: true
+    domain: market
+    granularity: 1d
+    source:
+      name: baostock
+      adapter: baostock_daily
+      endpoint: query_history_k_data_plus
+      params:
+        frequency: d
+        adjustflag: "1"
+        request_interval_seconds: 0.05
+        fields:
+          - date
+          - code
+          - open
+          - high
+          - low
+          - close
+          - preclose
+          - volume
+          - amount
+          - turn
+          - pctChg
+          - tradestatus
+    request:
+      universe_ref: universe_membership.hs300
+      start: "${START_DATE}"
+      end: "${END_DATE}"
+      index_date: "${INDEX_DATE}"
+      mode: incremental
+    schema:
+      primary_key:
+        - instrument_id
+        - trade_date
+      columns:
+        instrument_id:
+          source: code
+          transform: normalize_instrument_id
+        trade_date:
+          source: date
+          transform: to_date
+        open:
+          source: open
+          type: float64
+        high:
+          source: high
+          type: float64
+        low:
+          source: low
+          type: float64
+        close:
+          source: close
+          type: float64
+        preclose:
+          source: preclose
+          type: float64
+        volume:
+          source: volume
+          type: float64
+        amount:
+          source: amount
+          type: float64
+        turnover:
+          source: turn
+          type: float64
+        pct_chg:
+          source: pctChg
+          type: float64
+        trade_status:
+          source: tradestatus
+          type: int32
+    quality:
+      required_columns:
+        - instrument_id
+        - trade_date
+        - open
+        - high
+        - low
+        - close
+      rules:
+        - name: no_duplicate_pk
+          type: unique_key
+          key:
+            - instrument_id
+            - trade_date
+        - name: valid_price_range
+          type: expression
+          expr: "open > 0 and high > 0 and low > 0 and close > 0 and high >= low"
+        - name: non_negative_liquidity
+          type: expression
+          expr: "volume >= 0 and amount >= 0"
+        - name: coverage_floor
+          type: stock_coverage_vs_trade_days
+          min_ratio_p50: 0.85
+          min_ratio_p10: 0.65
+    storage:
+      raw_uri: "data/raw/source=baostock/dataset=market_bar_1d/ingest_date={ingest_date}/part-{run_id}.parquet"
+      curated_uri: "data/curated/table=market_bar_1d/trade_date={trade_date}/part-{run_id}.parquet"
+      format: parquet
+      partition_by:
+        - trade_date
+
+  market_bar_1m:
+    enabled: true
+    domain: market
+    granularity: 1m
+    source:
+      name: vendor_intraday
+      adapter: market_minute_bar
+      endpoint: bars_1m
+    request:
+      universe_ref: universe_membership.hs300
+      start: "${START_DATE}"
+      end: "${END_DATE}"
+      session_filter: CN_A_SHARE
+      mode: incremental
+    schema:
+      primary_key:
+        - instrument_id
+        - ts
+      columns:
+        instrument_id:
+          source: code
+          transform: normalize_instrument_id
+        ts:
+          source: datetime
+          transform: to_tz_datetime
+        open:
+          source: open
+          type: float64
+        high:
+          source: high
+          type: float64
+        low:
+          source: low
+          type: float64
+        close:
+          source: close
+          type: float64
+        volume:
+          source: volume
+          type: float64
+        amount:
+          source: amount
+          type: float64
+    quality:
+      required_columns:
+        - instrument_id
+        - ts
+        - close
+      rules:
+        - name: no_duplicate_pk
+          type: unique_key
+          key:
+            - instrument_id
+            - ts
+        - name: price_non_negative
+          type: expression
+          expr: "open > 0 and high > 0 and low > 0 and close > 0"
+        - name: ts_in_session
+          type: market_session_check
+          calendar: CN_STOCK
+    storage:
+      raw_uri: "data/raw/source=vendor_intraday/dataset=market_bar_1m/ingest_date={ingest_date}/part-{run_id}.parquet"
+      curated_uri: "data/curated/table=market_bar_1m/trade_date={trade_date}/part-{run_id}.parquet"
+      format: parquet
+      partition_by:
+        - trade_date
+
+  universe_membership:
+    enabled: true
+    domain: reference
+    granularity: event
+    source:
+      name: baostock
+      adapter: hs300_membership
+      endpoint: query_hs300_stocks
+    request:
+      start: "${START_DATE}"
+      end: "${END_DATE}"
+      mode: snapshot_append
+    schema:
+      primary_key:
+        - universe_id
+        - instrument_id
+        - in_date
+      columns:
+        universe_id:
+          value: hs300
+        instrument_id:
+          source: code
+          transform: normalize_instrument_id
+        instrument_name:
+          source: code_name
+        in_date:
+          source: update_date
+          transform: to_date
+        out_date:
+          source: out_date
+          transform: to_date_nullable
+        weight:
+          source: weight
+          type: float64
+    quality:
+      rules:
+        - name: no_duplicate_pk
+          type: unique_key
+          key:
+            - universe_id
+            - instrument_id
+            - in_date
+    storage:
+      curated_uri: "data/curated/table=universe_membership/as_of_date={as_of_date}/part-{run_id}.parquet"
+      format: parquet
+      partition_by:
+        - as_of_date
+
+  macro_series:
+    enabled: true
+    domain: macro
+    granularity: mixed
+    source:
+      name: macro_vendor
+      adapter: macro_timeseries
+      endpoint: series_values
+    request:
+      series_catalog:
+        - cpi_yoy
+        - ppi_yoy
+        - m2_yoy
+        - shibor_3m
+        - usdcny
+        - csi300_pe_ttm
+      start: "${START_DATE}"
+      end: "${END_DATE}"
+      include_revisions: true
+      mode: incremental
+    schema:
+      primary_key:
+        - series_id
+        - observation_date
+        - release_time
+      columns:
+        series_id:
+          source: series_id
+        observation_date:
+          source: observation_date
+          transform: to_date
+        release_time:
+          source: release_time
+          transform: to_tz_datetime
+        available_time:
+          source: available_time
+          transform: to_tz_datetime
+        frequency:
+          source: frequency
+        vintage:
+          source: vintage
+        value:
+          source: value
+          type: float64
+    quality:
+      required_columns:
+        - series_id
+        - observation_date
+        - available_time
+        - value
+      rules:
+        - name: no_duplicate_pk
+          type: unique_key
+          key:
+            - series_id
+            - observation_date
+            - release_time
+        - name: available_not_before_release
+          type: expression
+          expr: "available_time >= release_time"
+    storage:
+      raw_uri: "data/raw/source=macro_vendor/dataset=macro_series/ingest_date={ingest_date}/part-{run_id}.parquet"
+      curated_uri: "data/curated/table=macro_series/series_id={series_id}/observation_month={observation_month}/part-{run_id}.parquet"
+      format: parquet
+      partition_by:
+        - series_id
+        - observation_month
+
+  corp_action:
+    enabled: true
+    domain: corporate
+    granularity: event
+    source:
+      name: vendor_events
+      adapter: corporate_actions
+      endpoint: corp_actions
+    request:
+      universe_ref: universe_membership.hs300
+      start: "${START_DATE}"
+      end: "${END_DATE}"
+    schema:
+      primary_key:
+        - instrument_id
+        - ex_date
+        - action_type
+      columns:
+        instrument_id:
+          source: code
+          transform: normalize_instrument_id
+        ex_date:
+          source: ex_date
+          transform: to_date
+        action_type:
+          source: action_type
+        action_value:
+          source: action_value
+          type: float64
+    storage:
+      curated_uri: "data/curated/table=corp_action/ex_date={ex_date}/part-{run_id}.parquet"
+      format: parquet
+      partition_by:
+        - ex_date
+
+  instrument_dim:
+    enabled: true
+    domain: reference
+    granularity: slowly_changing_dimension
+    source:
+      name: vendor_refdata
+      adapter: instrument_master
+      endpoint: instruments
+    request:
+      universe_ref: universe_membership.hs300
+      mode: full_refresh
+    schema:
+      primary_key:
+        - instrument_id
+      columns:
+        instrument_id:
+          source: code
+          transform: normalize_instrument_id
+        exchange:
+          source: exchange
+        industry_l1:
+          source: industry_l1
+        industry_l2:
+          source: industry_l2
+        list_date:
+          source: list_date
+          transform: to_date_nullable
+        delist_date:
+          source: delist_date
+          transform: to_date_nullable
+    storage:
+      curated_uri: "data/curated/table=instrument_dim/snapshot_date={snapshot_date}/part-{run_id}.parquet"
+      format: parquet
+      partition_by:
+        - snapshot_date
+
+job_manifest:
+  output_uri: "data/manifests/ingestion/{dataset}/{run_date}/{run_id}.json"
+  required_fields:
+    - run_id
+    - dataset
+    - source
+    - start
+    - end
+    - status
+    - row_count
+    - quality_summary
+    - output_paths
+    - code_version
