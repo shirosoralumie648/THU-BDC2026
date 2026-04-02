@@ -868,8 +868,9 @@ def engineer_features(df):
     return df
 def process_single_stock(stock_row, data, features, sequence_length, date):
     """处理单只股票的数据，返回序列、目标值和股票索引"""
-    stock_code = stock_row['instrument']
-    # stock_idx = stock_row['stock_idx']
+    # 兼容 namedtuple 和 dict/Series
+    stock_code = stock_row.instrument if hasattr(stock_row, 'instrument') else stock_row['instrument']
+    target_label = stock_row.label if hasattr(stock_row, 'label') else stock_row['label']
     
     # 获取该股票历史sequence_length天的数据（包括当天）
     stock_history = data[
@@ -879,7 +880,7 @@ def process_single_stock(stock_row, data, features, sequence_length, date):
 
     if len(stock_history) == sequence_length:
         seq = stock_history[features].values
-        target = stock_row['label']  # 下一天的涨跌幅
+        target = target_label  # 下一天的涨跌幅
         return seq, target, stock_code
     else:
         return None, None, None
@@ -901,7 +902,7 @@ def process_single_date(date, data, features, sequence_length):
         
         # 对于单个日期内的股票处理，仍使用串行方式避免过度并行化
         # 因为多进程的开销可能超过收益
-        for _, stock_row in day_data.iterrows():
+        for stock_row in day_data.itertuples(index=False):
             seq, target, stock_idx = process_single_stock(
                 stock_row, data, features, sequence_length, date
             )
