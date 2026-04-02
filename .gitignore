@@ -23,6 +23,8 @@ wheels/
 # Codex local configuration
 .codex/
 .worktrees/
+.claude/
+.superpowers/
 
 # Claude Flow runtime data
 .claude-flow/data/
