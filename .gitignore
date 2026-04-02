@@ -29,6 +29,7 @@ wheels/
 # Claude Flow runtime data
 .claude-flow/data/
 .claude-flow/logs/
+temp/ingestion_api_test_runtime/
 
 # Environment variables
 .env

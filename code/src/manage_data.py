@@ -15,6 +15,7 @@ from data_manager import collect_data_sources
 from data_manager import infer_existing_column
 from data_manager import load_stock_to_industry_map
 from data_manager import normalize_stock_code_series
+from data_manager import resolve_data_root
 from data_manager import resolve_dataset_path
 from data_manager import resolve_dataset_write_targets
 from data_manager import resolve_hf_factor_path
@@ -33,6 +34,7 @@ def utc_timestamp() -> str:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='统一数据管理工具')
     subparsers = parser.add_subparsers(dest='command', required=True)
+    default_ingestion_runtime_root = os.path.join(resolve_data_root(config), 'runtime', 'ingestion')
 
     manifest_parser = subparsers.add_parser('manifest', help='生成数据源清单')
     manifest_parser.add_argument(

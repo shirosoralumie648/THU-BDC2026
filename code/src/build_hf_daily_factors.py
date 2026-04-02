@@ -86,7 +86,7 @@ def _collect_input_paths(inputs: List[str], input_globs: List[str]) -> List[str]
     return dedup
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     default_output = os.path.join(resolve_data_root(config), 'hf_daily_factors.csv')
 
     parser = argparse.ArgumentParser(description='将高频(日内)数据聚合为日级因子表')
@@ -406,8 +406,8 @@ def _merge_daily_tables(daily_tables: List[pd.DataFrame]) -> pd.DataFrame:
     return merged
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: Optional[List[str]] = None) -> None:
+    args = parse_args(argv)
     input_paths = _collect_input_paths(args.input, args.input_glob)
     if not input_paths:
         raise ValueError('至少需要通过 --input 或 --input-glob 提供一个输入文件')
