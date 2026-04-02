@@ -49,6 +49,24 @@ end_date = "***"
 
 # 训练与预测
 
+# 推荐流程（当前默认）
+
+1. 校验配置
+   - `python code/src/manage_data.py validate-pipeline-config --config-dir ./config`
+2. 构建因子宽表
+   - `python code/src/manage_data.py build-factor-graph --pipeline-config-dir ./config --feature-set-version v1`
+3. 构建训练集/测试集
+   - `python code/src/manage_data.py build-dataset --pipeline-config-dir ./config --feature-set-version v1`
+4. 训练
+   - `sh train.sh`
+5. 预测
+   - `sh test.sh`
+6. 自评与 Docker 验证
+   - `python test/score_self.py`
+   - `docker compose up`
+
+说明：`data/train.csv` / `data/test.csv` 的旧流程仍兼容，但默认推荐已经切换为 `pipeline config -> factor graph -> dataset build -> train/predict`。
+
 训练：运行根目录下的sh train.sh
 
 windows可以直接运行`python code/src/train.py`

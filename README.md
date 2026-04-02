@@ -162,19 +162,45 @@
 
 `source .venv/bin/activate`
 
-3) 训练模型
+## 推荐执行流程（当前默认）
 
+1) 校验 pipeline 配置
+
+```bash
+python code/src/manage_data.py validate-pipeline-config --config-dir ./config
 ```
+
+2) 构建宽表因子
+
+```bash
+python code/src/manage_data.py build-factor-graph \
+  --pipeline-config-dir ./config \
+  --feature-set-version v1
+```
+
+3) 构建训练/测试集
+
+```bash
+python code/src/manage_data.py build-dataset \
+  --pipeline-config-dir ./config \
+  --feature-set-version v1
+```
+
+4) 训练模型
+
+```bash
 sh train.sh
 ```
 
-4) 生成预测结果
+5) 生成预测结果
 
-```
+```bash
 sh test.sh
 ```
 
-5) 打开 TensorBoard 查看训练过程与因子面板
+说明：legacy `data/train.csv` / `data/test.csv` 仍保持兼容；当前优先推荐路径是 `pipeline config -> factor graph -> dataset build -> train/predict`。
+
+6) 打开 TensorBoard 查看训练过程与因子面板
 
 ```
 sh tensorboard.sh
