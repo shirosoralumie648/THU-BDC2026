@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-import numpy as np
+from portfolio.candidate_selector import select_candidates
+from portfolio.constraints import apply_constraints
+from portfolio.weighting import compute_weights
 
 
 def scores_to_portfolio(scores, stock_ids, strategy):
@@ -8,19 +10,9 @@ def scores_to_portfolio(scores, stock_ids, strategy):
     if top_k <= 0:
         raise ValueError('持仓股票数量必须大于 0')
 
-    order = np.argsort(scores)[::-1]
-    top_indices = order[:top_k]
-    selected_ids = [stock_ids[i] for i in top_indices]
-    selected_scores = scores[top_indices]
-
-    if strategy['weighting'] == 'equal' or top_k == 1:
-        weights = np.full(top_k, 1.0 / top_k, dtype=np.float64)
-    elif strategy['weighting'] == 'softmax':
-        temperature = max(float(strategy.get('temperature', 1.0)), 1e-6)
-        stable_scores = selected_scores - selected_scores.max()
-        weights = np.exp(stable_scores / temperature)
-        weights = weights / weights.sum()
-    else:
-        raise ValueError(f"不支持的权重方式: {strategy['weighting']}")
-
+    strategy = dict(strategy)
+    strategy['top_k'] = top_k
+    candidate_ids, candidate_scores = select_candidates(scores, stock_ids)
+    selected_ids, selected_scores = apply_constraints(candidate_ids, candidate_scores, strategy)
+    weights = compute_weights(selected_scores, strategy)
     return selected_ids, weights
