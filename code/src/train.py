@@ -13,12 +13,20 @@ from factor_store import engineer_group_features
 from factor_store import resolve_factor_pipeline
 from factor_store import save_factor_snapshot
 from model import StockTransformer
-from data_manager import build_stock_industry_index as build_stock_industry_index_from_manager
 from data_manager import collect_data_sources
 from data_manager import load_market_dataset
-from data_manager import load_stock_to_industry_map
-from data_manager import resolve_industry_mapping_path
+from data_manager import load_market_dataset_from_path
+from data_manager import load_train_dataset_from_build_manifest
+from data_manager import log_dataset_manifest_info
 from data_manager import save_data_manifest
+from experiments.metrics import build_strategy_candidates as build_strategy_candidates_shared
+from experiments.metrics import choose_best_strategy as choose_best_strategy_shared
+from experiments.metrics import format_strategy_metric_summary as format_strategy_metric_summary_shared
+from experiments.splits import build_rolling_validation_folds as build_rolling_validation_folds_shared
+from graph.correlation_graph import build_correlation_prior_adjacency
+from graph.graph_builder import build_prior_graph_adjacency as build_prior_graph_adjacency_shared
+from graph.industry_graph import build_industry_prior_adjacency
+from graph.industry_graph import build_stock_industry_index as build_stock_industry_index_shared
 from utils import apply_cross_sectional_normalization
 from utils import augment_engineered_features
 from utils import create_ranking_dataset_vectorized
@@ -149,150 +157,19 @@ def _load_prior_graph_industry_mapping():
 
 
 def _build_industry_prior_adjacency(stockid2idx, num_stocks):
-    if not bool(config.get('prior_graph_use_industry', True)):
-        return np.zeros((num_stocks, num_stocks), dtype=bool)
-
-    stock_to_industry = _load_prior_graph_industry_mapping()
-    if not stock_to_industry:
-        return np.zeros((num_stocks, num_stocks), dtype=bool)
-
-    industry_to_indices = {}
-    stock_codes = list(stockid2idx.keys())
-    normalized_codes = _normalize_stock_code_series(pd.Series(stock_codes)).tolist()
-    for stock_code, normalized in zip(stock_codes, normalized_codes):
-        idx = stockid2idx[stock_code]
-        industry = stock_to_industry.get(normalized, None)
-        if not industry:
-            continue
-        industry_to_indices.setdefault(industry, []).append(int(idx))
-
-    adj = np.zeros((num_stocks, num_stocks), dtype=bool)
-    for indices in industry_to_indices.values():
-        if len(indices) <= 1:
-            continue
-        idx_arr = np.asarray(indices, dtype=np.int64)
-        adj[np.ix_(idx_arr, idx_arr)] = True
-    return adj
+    return build_industry_prior_adjacency(stockid2idx, config)
 
 
 def _build_correlation_prior_adjacency(train_data, num_stocks):
-    if not bool(config.get('prior_graph_use_correlation', True)):
-        return np.zeros((num_stocks, num_stocks), dtype=bool)
-    if 'instrument' not in train_data.columns or '日期' not in train_data.columns:
-        return np.zeros((num_stocks, num_stocks), dtype=bool)
-
-    source_col = str(config.get('prior_graph_corr_source_col', 'label_raw')).strip()
-    if source_col not in train_data.columns:
-        source_col = 'label' if 'label' in train_data.columns else source_col
-    if source_col not in train_data.columns:
-        return np.zeros((num_stocks, num_stocks), dtype=bool)
-
-    corr_min_periods = int(config.get('prior_graph_corr_min_periods', 20))
-    corr_threshold = float(config.get('prior_graph_corr_threshold', 0.2))
-    corr_topk = max(0, int(config.get('prior_graph_corr_topk', 20)))
-
-    pivot = train_data.pivot_table(
-        index='日期',
-        columns='instrument',
-        values=source_col,
-        aggfunc='mean',
-    )
-    if pivot.empty:
-        return np.zeros((num_stocks, num_stocks), dtype=bool)
-
-    corr = pivot.corr(min_periods=max(2, corr_min_periods))
-    if corr.empty:
-        return np.zeros((num_stocks, num_stocks), dtype=bool)
-
-    valid_cols = []
-    for col in corr.columns:
-        try:
-            idx = int(col)
-        except Exception:
-            continue
-        if 0 <= idx < num_stocks:
-            valid_cols.append(idx)
-    if not valid_cols:
-        return np.zeros((num_stocks, num_stocks), dtype=bool)
-
-    corr = corr.loc[valid_cols, valid_cols]
-    abs_corr = np.nan_to_num(np.abs(corr.to_numpy(dtype=np.float32)), nan=0.0, posinf=0.0, neginf=0.0)
-    np.fill_diagonal(abs_corr, 0.0)
-
-    local_adj = np.zeros_like(abs_corr, dtype=bool)
-    if corr_threshold > 0.0:
-        local_adj |= abs_corr >= corr_threshold
-    if corr_topk > 0:
-        num_local = abs_corr.shape[0]
-        for i in range(num_local):
-            row = abs_corr[i]
-            if row.size == 0:
-                continue
-            k = min(corr_topk, row.size)
-            if k <= 0:
-                continue
-            topk_idx = np.argpartition(row, -k)[-k:]
-            local_adj[i, topk_idx] = True
-
-    local_adj = local_adj | local_adj.T
-    np.fill_diagonal(local_adj, False)
-
-    full_adj = np.zeros((num_stocks, num_stocks), dtype=bool)
-    idx_arr = np.asarray(valid_cols, dtype=np.int64)
-    full_adj[np.ix_(idx_arr, idx_arr)] = local_adj
-    return full_adj
+    return build_correlation_prior_adjacency(train_data, num_stocks, config)
 
 
 def build_prior_graph_adjacency(train_data, stockid2idx):
-    num_stocks = len(stockid2idx)
-    if num_stocks <= 0:
-        raise ValueError('stockid2idx 为空，无法构建先验图')
-
-    industry_adj = _build_industry_prior_adjacency(stockid2idx, num_stocks)
-    corr_adj = _build_correlation_prior_adjacency(train_data, num_stocks)
-    prior_adj = industry_adj | corr_adj
-    np.fill_diagonal(prior_adj, True)
-
-    total_edges = int(prior_adj.sum())
-    density = total_edges / float(num_stocks * num_stocks)
-    print(
-        f"先验图构建完成: num_stocks={num_stocks}, "
-        f"industry_edges={int(industry_adj.sum())}, "
-        f"corr_edges={int(corr_adj.sum())}, "
-        f"merged_edges={total_edges}, density={density:.4f}"
-    )
-    return prior_adj.astype(np.bool_)
+    return build_prior_graph_adjacency_shared(train_data, stockid2idx, config)
 
 
 def build_stock_industry_index(stockid2idx):
-    """
-    构建股票索引到行业索引映射，未知行业记为 -1。
-    """
-    num_stocks = len(stockid2idx)
-    stock_industry_idx = np.full(num_stocks, -1, dtype=np.int64)
-    if num_stocks <= 0:
-        return stock_industry_idx, []
-
-    stock_to_industry = _load_prior_graph_industry_mapping()
-    if not stock_to_industry:
-        print('未加载到行业映射，行业虚拟股将回退为关闭状态。')
-        return stock_industry_idx, []
-
-    stock_codes = list(stockid2idx.keys())
-    stock_industry_idx, industry_vocab, matched = build_stock_industry_index_from_manager(
-        stock_codes,
-        stock_to_industry,
-    )
-    if not industry_vocab:
-        print('行业映射与股票池无交集，行业虚拟股将回退为关闭状态。')
-        return np.full(num_stocks, -1, dtype=np.int64), []
-
-    coverage = matched / float(max(1, num_stocks))
-    print(
-        f"行业映射构建完成: stocks={num_stocks}, matched={matched}, "
-        f"coverage={coverage:.2%}, industries={len(industry_vocab)}"
-    )
-    return stock_industry_idx, industry_vocab
+    return build_stock_industry_index_shared(stockid2idx, config)
 
 
 def _neutralize_label_by_benchmark(processed, label_col='label', date_col='日期'):
@@ -815,25 +692,7 @@ def _rank_ic(valid_pred, valid_true_return):
 
 
 def build_strategy_candidates():
-    top_k_candidates = sorted({int(k) for k in config.get('prediction_top_k_candidates', [5]) if 1 <= int(k) <= 5})
-    weighting_candidates = list(dict.fromkeys(config.get('prediction_weighting_candidates', ['equal'])))
-
-    candidates = []
-    for top_k in top_k_candidates:
-        for weighting in weighting_candidates:
-            if weighting not in {'equal', 'softmax'}:
-                continue
-            if weighting == 'softmax' and top_k == 1:
-                continue
-            candidates.append({
-                'name': f'{weighting}_top{top_k}',
-                'top_k': top_k,
-                'weighting': weighting,
-            })
-
-    if not candidates:
-        candidates = [{'name': 'equal_top5', 'top_k': 5, 'weighting': 'equal'}]
-    return candidates
+    return build_strategy_candidates_shared(config)
 
 
 def build_portfolio_weights(scores, top_k, weighting='equal', temperature=1.0):
@@ -926,51 +785,11 @@ def calculate_ranking_metrics(y_pred, y_true, masks, strategy_candidates=None, t
 
 
 def choose_best_strategy(eval_metrics, strategy_candidates):
-    selection_metric = config.get('selection_metric', 'auto')
-    selection_mode = str(config.get('strategy_selection_mode', 'risk_adjusted')).lower()
-
-    if selection_metric != 'auto':
-        if selection_metric not in eval_metrics:
-            raise ValueError(f'selection_metric 不在评估指标中: {selection_metric}')
-        metric_value = eval_metrics.get(selection_metric, float('-inf'))
-        for candidate in strategy_candidates:
-            base_metric = f'return_{candidate["name"]}'
-            if selection_metric == base_metric or selection_metric.startswith(f'{base_metric}_'):
-                return candidate, metric_value
-        raise ValueError(f'未找到 selection_metric 对应的策略: {selection_metric}')
-
-    best_candidate = None
-    best_score = -float('inf')
-
-    for candidate in strategy_candidates:
-        if selection_mode == 'risk_adjusted':
-            metric_name = f'return_{candidate["name"]}_risk_adjusted'
-        else:
-            metric_name = f'return_{candidate["name"]}'
-        metric_value = eval_metrics.get(metric_name, -float('inf'))
-        if metric_value > best_score:
-            best_score = metric_value
-            best_candidate = candidate
-
-    if best_candidate is None:
-        raise ValueError('验证指标为空，无法选择最优持仓策略')
-
-    return best_candidate, best_score
+    return choose_best_strategy_shared(eval_metrics, strategy_candidates, config)
 
 
 def format_strategy_metric_summary(metrics, strategy_candidates):
-    """将候选持仓策略收益整理成便于打印的一行文本。"""
-    parts = []
-    for candidate in strategy_candidates:
-        metric_name = f'return_{candidate["name"]}'
-        metric_std_name = f'{metric_name}_std'
-        metric_ra_name = f'{metric_name}_risk_adjusted'
-        if metric_name in metrics:
-            mean_ret = metrics[metric_name]
-            std_ret = metrics.get(metric_std_name, 0.0)
-            ra_ret = metrics.get(metric_ra_name, mean_ret)
-            parts.append(f'{candidate["name"]}=mean:{mean_ret:.4f}|std:{std_ret:.4f}|ra:{ra_ret:.4f}')
-    return ', '.join(parts)
+    return format_strategy_metric_summary_shared(metrics, strategy_candidates)
 
 
 def format_factor_summary(feature_pipeline):
@@ -1849,74 +1668,7 @@ def split_train_val_by_last_month(df, sequence_length):
 
 
 def build_rolling_validation_folds(df, sequence_length):
-    """构建滚动验证折，并保证所有验证折都不被训练集未来数据污染。"""
-    df = df.copy()
-    df['日期'] = pd.to_datetime(df['日期'])
-    df = df.sort_values(['日期', '股票代码']).reset_index(drop=True)
-
-    unique_dates = [pd.Timestamp(d).normalize() for d in sorted(df['日期'].unique())]
-    label_ready_dates = unique_dates[:-5]
-
-    num_folds = int(config.get('rolling_val_num_folds', 4))
-    window_size = int(config.get('rolling_val_window_size', 20))
-    step_size = int(config.get('rolling_val_step_size', window_size))
-
-    if num_folds <= 0:
-        raise ValueError("rolling_val_num_folds 必须大于 0")
-    if window_size <= 0 or step_size <= 0:
-        raise ValueError("rolling_val_window_size 和 rolling_val_step_size 必须大于 0")
-
-    required_dates = window_size + (num_folds - 1) * step_size
-    if len(label_ready_dates) < required_dates:
-        raise ValueError(
-            f"可用于滚动验证的交易日不足: 需要至少 {required_dates} 天，当前仅有 {len(label_ready_dates)} 天"
-        )
-
-    reverse_bounds = []
-    last_end_idx = len(label_ready_dates) - 1
-    for offset in range(num_folds):
-        end_idx = last_end_idx - offset * step_size
-        start_idx = end_idx - window_size + 1
-        if start_idx < 0:
-            raise ValueError("滚动验证窗口越界，请减小折数或窗口大小")
-        reverse_bounds.append((start_idx, end_idx))
-
-    reverse_bounds.reverse()
-    folds = []
-    for fold_idx, (start_idx, end_idx) in enumerate(reverse_bounds, start=1):
-        start_date = label_ready_dates[start_idx]
-        end_date = label_ready_dates[end_idx]
-        folds.append({
-            'name': f'fold_{fold_idx}',
-            'start_date': start_date,
-            'end_date': end_date,
-        })
-
-    earliest_start = folds[0]['start_date']
-    earliest_start_idx = unique_dates.index(earliest_start)
-    if earliest_start_idx <= 0:
-        raise ValueError("滚动验证起点过早，没有可用于训练的历史数据")
-
-    context_start_idx = max(0, earliest_start_idx - (sequence_length - 1))
-    val_context_start = unique_dates[context_start_idx]
-
-    train_df = df[df['日期'] < earliest_start].copy()
-    val_df = df[df['日期'] >= val_context_start].copy()
-
-    print(f"全量数据范围: {df['日期'].min().date()} 到 {df['日期'].max().date()}")
-    print(f"训练集范围: {train_df['日期'].min().date()} 到 {train_df['日期'].max().date()}")
-    print(f"滚动验证实际取数范围(含序列上下文): {val_df['日期'].min().date()} 到 {val_df['日期'].max().date()}")
-    print(
-        "滚动验证参数: "
-        f"folds={num_folds}, window_size={window_size}, step_size={step_size}"
-    )
-    print("滚动验证折:")
-    for fold in folds:
-        print(f"  - {fold['name']}: {fold['start_date'].date()} 到 {fold['end_date'].date()}")
-
-    train_df['日期'] = train_df['日期'].dt.strftime('%Y-%m-%d')
-    val_df['日期'] = val_df['日期'].dt.strftime('%Y-%m-%d')
-    return train_df, val_df, folds
+    return build_rolling_validation_folds_shared(df, sequence_length, config)
 
 
 def build_validation_fold_loaders(val_data, features, val_folds):
@@ -2000,14 +1752,22 @@ def main():
         device_msg = "当前训练设备: cpu"
     print(device_msg)
     
-    # 1. 数据加载
-    full_df, data_file = load_market_dataset(config, 'train.csv')
-    print(f"训练数据文件: {data_file}")
     factor_pipeline = resolve_factor_pipeline(
         config['feature_num'],
         config['factor_store_path'],
         config['builtin_factor_registry_path'],
     )
+    dataset_manifest_train_path, dataset_manifest_info = load_train_dataset_from_build_manifest(config, factor_pipeline)
+    log_dataset_manifest_info(dataset_manifest_info, label='train')
+
+    # 1. 数据加载（优先使用 build-dataset manifest 指向的数据集）
+    if dataset_manifest_train_path:
+        full_df, data_file = load_market_dataset_from_path(config, dataset_manifest_train_path)
+        print(f"训练数据文件(manifest-train): {data_file}")
+    else:
+        full_df, data_file = load_market_dataset(config, 'train.csv')
+        print(f"训练数据文件(legacy-train): {data_file}")
+
     snapshot_path = os.path.join(output_dir, 'active_factors.json')
     snapshot_info = save_factor_snapshot(factor_pipeline, snapshot_path)
     factor_pipeline['snapshot_meta'] = snapshot_info.get('snapshot', {})
@@ -2023,7 +1783,7 @@ def main():
     print_active_factors(factor_pipeline)
     validation_mode = config.get('validation_mode', 'rolling')
     if validation_mode == 'rolling':
-        train_df, val_df, val_folds = build_rolling_validation_folds(full_df, config['sequence_length'])
+        train_df, val_df, val_folds = build_rolling_validation_folds_shared(full_df, config['sequence_length'], config)
     else:
         train_df, val_df, val_start = split_train_val_by_last_month(full_df, config['sequence_length'])
         val_folds = [{

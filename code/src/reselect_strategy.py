@@ -9,19 +9,16 @@ import torch
 
 from config import config
 from data_manager import load_market_dataset
+from data_manager import load_market_dataset_from_path
+from data_manager import load_train_dataset_from_build_manifest
+from data_manager import log_dataset_manifest_info
 from factor_store import load_factor_snapshot
 from factor_store import resolve_factor_pipeline
 from model import StockTransformer
-from train import PortfolioOptimizationLoss
-from train import build_rolling_validation_folds
-from train import build_strategy_candidates
-from train import build_validation_fold_loaders
-from train import choose_best_strategy
-from train import evaluate_ranking_folds
-from train import format_strategy_metric_summary
-from train import preprocess_val_data
-from train import set_seed
-from train import split_train_val_by_last_month
+from experiments.metrics import build_strategy_candidates as build_strategy_candidates_shared
+from experiments.metrics import choose_best_strategy as choose_best_strategy_shared
+from experiments.metrics import format_strategy_metric_summary as format_strategy_metric_summary_shared
+from experiments.splits import build_rolling_validation_folds as build_rolling_validation_folds_shared
 from utils import resolve_feature_indices
 
 
@@ -188,12 +185,20 @@ def main():
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"未找到模型文件: {model_path}")
 
-    full_df, data_file = load_market_dataset(config, "train.csv")
-    print(f"重选策略数据文件: {data_file}")
+    feature_pipeline = _load_feature_pipeline(output_dir)
+    dataset_manifest_train_path, dataset_manifest_info = load_train_dataset_from_build_manifest(config, feature_pipeline)
+    log_dataset_manifest_info(dataset_manifest_info, label='reselect')
+
+    if dataset_manifest_train_path:
+        full_df, data_file = load_market_dataset_from_path(config, dataset_manifest_train_path)
+        print(f"重选策略数据文件(manifest-train): {data_file}")
+    else:
+        full_df, data_file = load_market_dataset(config, "train.csv")
+        print(f"重选策略数据文件(legacy-train): {data_file}")
 
     validation_mode = str(config.get("validation_mode", "rolling")).lower()
     if validation_mode == "rolling":
-        _, val_df, val_folds = build_rolling_validation_folds(full_df, config["sequence_length"])
+        _, val_df, val_folds = build_rolling_validation_folds_shared(full_df, config["sequence_length"], config)
     else:
         _, val_df, val_start = split_train_val_by_last_month(full_df, config["sequence_length"])
         val_end = pd.to_datetime(val_df["日期"]).max().normalize()
@@ -207,7 +212,6 @@ def main():
     stock_ids = sorted(full_df["股票代码"].unique())
     stockid2idx = {sid: idx for idx, sid in enumerate(stock_ids)}
 
-    feature_pipeline = _load_feature_pipeline(output_dir)
     val_data, features = preprocess_val_data(val_df, feature_pipeline, stockid2idx=stockid2idx)
 
     saved_features = _load_effective_features(output_dir)
@@ -249,7 +253,7 @@ def main():
     model.eval()
 
     criterion = _build_criterion()
-    strategy_candidates = build_strategy_candidates()
+    strategy_candidates = build_strategy_candidates_shared(config)
     print("候选持仓策略:", ", ".join(candidate["name"] for candidate in strategy_candidates))
 
     eval_loss, eval_metrics, fold_results = evaluate_ranking_folds(
@@ -263,9 +267,9 @@ def main():
     )
 
     print(f"重选评估 Loss: {eval_loss:.6f}")
-    print("策略收益汇总:", format_strategy_metric_summary(eval_metrics, strategy_candidates))
+    print("策略收益汇总:", format_strategy_metric_summary_shared(eval_metrics, strategy_candidates))
 
-    best_candidate, best_score = choose_best_strategy(eval_metrics, strategy_candidates)
+    best_candidate, best_score = choose_best_strategy_shared(eval_metrics, strategy_candidates, config)
     best_candidate_return = eval_metrics.get(
         f"return_{best_candidate['name']}",
         best_score,
@@ -277,9 +281,10 @@ def main():
     )
 
     for fold_result in fold_results:
-        fold_best_candidate, fold_best_score = choose_best_strategy(
+        fold_best_candidate, fold_best_score = choose_best_strategy_shared(
             fold_result["metrics"],
             strategy_candidates,
+            config,
         )
         print(
             f"  - {fold_result['name']} "

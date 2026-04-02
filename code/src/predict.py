@@ -14,9 +14,13 @@ from factor_store import engineer_group_features
 from factor_store import load_factor_snapshot
 from factor_store import resolve_factor_pipeline
 from model import StockTransformer
+from portfolio.policy import scores_to_portfolio
 from data_manager import build_stock_industry_index as build_stock_industry_index_from_manager
 from data_manager import collect_data_sources
 from data_manager import load_market_dataset
+from data_manager import load_market_dataset_from_path
+from data_manager import load_train_dataset_from_build_manifest
+from data_manager import log_dataset_manifest_info
 from data_manager import load_stock_to_industry_map
 from data_manager import save_data_manifest
 from utils import apply_cross_sectional_normalization
@@ -132,29 +136,7 @@ def load_prediction_strategy(output_dir):
 		'weighting': weighting,
 		'temperature': float(strategy.get('temperature', config.get('softmax_temperature', 1.0))),
 	}
-
-
-def scores_to_portfolio(scores, stock_ids, strategy):
-	top_k = min(int(strategy['top_k']), len(stock_ids), 5)
-	if top_k <= 0:
-		raise ValueError('持仓股票数量必须大于 0')
-
-	order = np.argsort(scores)[::-1]
-	top_indices = order[:top_k]
-	selected_ids = [stock_ids[i] for i in top_indices]
-	selected_scores = scores[top_indices]
-
-	if strategy['weighting'] == 'equal' or top_k == 1:
-		weights = np.full(top_k, 1.0 / top_k, dtype=np.float64)
-	elif strategy['weighting'] == 'softmax':
-		temperature = max(float(strategy.get('temperature', 1.0)), 1e-6)
-		stable_scores = selected_scores - selected_scores.max()
-		weights = np.exp(stable_scores / temperature)
-		weights = weights / weights.sum()
-	else:
-		raise ValueError(f"不支持的权重方式: {strategy['weighting']}")
-
-	return selected_ids, weights
+from portfolio.policy import scores_to_portfolio
 
 
 def apply_optional_global_scaler(processed, features, scaler_path):
@@ -251,8 +233,33 @@ def main():
 	manifest_path = save_data_manifest(config['output_dir'], data_manifest, filename='data_manifest_predict.json')
 	print(f'已生成预测数据源清单: {manifest_path}')
 
-	raw_df, data_file = load_market_dataset(config, 'train.csv', dtype={'股票代码': str})
-	print(f'预测输入数据文件: {data_file}')
+	if os.path.exists(factor_snapshot_path):
+		feature_pipeline = load_factor_snapshot(factor_snapshot_path)
+		print(
+			f'加载训练因子快照: {factor_snapshot_path} | '
+			f'fingerprint={feature_pipeline.get("factor_fingerprint", "")}'
+		)
+	else:
+		feature_pipeline = resolve_factor_pipeline(
+			config['feature_num'],
+			config['factor_store_path'],
+			config['builtin_factor_registry_path'],
+		)
+		print(f'未找到训练因子快照，回退到当前因子配置: {config["factor_store_path"]}')
+
+	dataset_manifest_train_path, dataset_manifest_info = load_train_dataset_from_build_manifest(config, feature_pipeline)
+	log_dataset_manifest_info(dataset_manifest_info, label='predict')
+
+	if dataset_manifest_train_path:
+		raw_df, data_file = load_market_dataset_from_path(
+			config,
+			dataset_manifest_train_path,
+			dtype={'股票代码': str},
+		)
+		print(f'预测输入数据文件(manifest-train): {data_file}')
+	else:
+		raw_df, data_file = load_market_dataset(config, 'train.csv', dtype={'股票代码': str})
+		print(f'预测输入数据文件(legacy-train): {data_file}')
 	raw_df['股票代码'] = raw_df['股票代码'].astype(str).str.zfill(6)
 	raw_df['日期'] = pd.to_datetime(raw_df['日期'])
 	latest_date = raw_df['日期'].max()
@@ -291,19 +298,6 @@ def main():
 			)
 		else:
 			print('未构建到有效行业映射，行业虚拟股将回退为空映射。')
-	if os.path.exists(factor_snapshot_path):
-		feature_pipeline = load_factor_snapshot(factor_snapshot_path)
-		print(
-			f'加载训练因子快照: {factor_snapshot_path} | '
-			f'fingerprint={feature_pipeline.get("factor_fingerprint", "")}'
-		)
-	else:
-		feature_pipeline = resolve_factor_pipeline(
-			config['feature_num'],
-			config['factor_store_path'],
-			config['builtin_factor_registry_path'],
-		)
-		print(f'未找到训练因子快照，回退到当前因子配置: {config["factor_store_path"]}')
 
 	processed, features = preprocess_predict_data(raw_df, stockid2idx, feature_pipeline)
 	if os.path.exists(effective_features_path):
