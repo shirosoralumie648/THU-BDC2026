@@ -29,8 +29,10 @@ WORKDIR /app
 # Copy dependency files
 COPY pyproject.toml uv.lock ./
 
-# Install dependencies
-RUN uv sync --frozen
+# Install dependencies.
+# Cache uv downloads across builds to avoid repeatedly pulling large CUDA wheels.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen
 
 # Copy the application code
 COPY . .
