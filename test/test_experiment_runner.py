@@ -11,6 +11,7 @@ if SRC_ROOT not in sys.path:
     sys.path.insert(0, SRC_ROOT)
 
 from experiments.ensemble import summarize_multi_seed_runs
+from experiments.runner import build_strategy_export_payload
 from experiments.runner import summarize_experiment_run
 from experiments.splits import build_rolling_validation_folds
 
@@ -60,7 +61,14 @@ class ExperimentRunnerTests(unittest.TestCase):
             {'name': 'equal_top2', 'top_k': 2, 'weighting': 'equal'},
             {'name': 'softmax_top2', 'top_k': 2, 'weighting': 'softmax'},
         ]
-        self.runtime_config = {'strategy_selection_mode': 'risk_adjusted', 'selection_metric': 'auto'}
+        self.runtime_config = {
+            'strategy_selection_mode': 'risk_adjusted',
+            'selection_metric': 'auto',
+            'softmax_temperature': 1.25,
+            'strategy_risk_lambda': 0.2,
+            'validation_mode': 'rolling',
+            'label_horizon': 5,
+        }
 
     def test_summarize_experiment_run_reports_best_strategy_and_fold_diagnostics(self):
         eval_metrics = {
@@ -109,7 +117,97 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertAlmostEqual(summary['best_score'], 0.06, places=8)
         self.assertEqual(len(summary['fold_diagnostics']), 2)
         self.assertEqual(summary['fold_diagnostics'][1]['best_candidate']['name'], 'softmax_top2')
+        self.assertEqual(summary['regime_summary']['best_candidate_win_counts']['equal_top2'], 1)
+        self.assertEqual(summary['regime_summary']['best_candidate_win_counts']['softmax_top2'], 1)
         self.assertIn('equal_top2=mean:0.0800', summary['strategy_summary'])
+
+    def test_build_strategy_export_payload_extends_reselected_json_shape(self):
+        eval_metrics = {
+            'return_equal_top2': 0.08,
+            'return_equal_top2_std': 0.02,
+            'return_equal_top2_risk_adjusted': 0.06,
+            'return_softmax_top2': 0.09,
+            'return_softmax_top2_std': 0.05,
+            'return_softmax_top2_risk_adjusted': 0.04,
+            'rank_ic_mean': 0.12,
+            'rank_ic_ir': 0.8,
+        }
+        fold_results = [
+            {
+                'name': 'fold_1',
+                'start_date': pd.Timestamp('2024-02-01'),
+                'end_date': pd.Timestamp('2024-02-05'),
+                'num_samples': 12,
+                'loss': 0.31,
+                'metrics': dict(eval_metrics),
+            },
+            {
+                'name': 'fold_2',
+                'start_date': pd.Timestamp('2024-02-08'),
+                'end_date': pd.Timestamp('2024-02-12'),
+                'num_samples': 10,
+                'loss': 0.29,
+                'metrics': {
+                    'return_equal_top2': 0.03,
+                    'return_equal_top2_std': 0.01,
+                    'return_equal_top2_risk_adjusted': 0.02,
+                    'return_softmax_top2': 0.11,
+                    'return_softmax_top2_std': 0.03,
+                    'return_softmax_top2_risk_adjusted': 0.08,
+                    'rank_ic_mean': 0.05,
+                    'rank_ic_ir': 0.4,
+                },
+            },
+        ]
+        run_summary = summarize_experiment_run(
+            eval_loss=0.30,
+            eval_metrics=eval_metrics,
+            fold_results=fold_results,
+            strategy_candidates=self.strategy_candidates,
+            runtime_config=self.runtime_config,
+        )
+        validation_folds = [
+            {
+                'name': 'fold_1',
+                'start_date': pd.Timestamp('2024-02-01'),
+                'end_date': pd.Timestamp('2024-02-05'),
+                'purge_days': 3,
+                'embargo_days': 2,
+                'label_horizon': 5,
+            },
+            {
+                'name': 'fold_2',
+                'start_date': pd.Timestamp('2024-02-08'),
+                'end_date': pd.Timestamp('2024-02-12'),
+                'purge_days': 3,
+                'embargo_days': 2,
+                'label_horizon': 5,
+            },
+        ]
+
+        payload = build_strategy_export_payload(
+            run_summary=run_summary,
+            validation_folds=validation_folds,
+            runtime_config=self.runtime_config,
+            source='validation_reselect',
+            exported_at='2026-04-02 12:00:00',
+            exported_at_field='reselected_at',
+            best_epoch=7,
+        )
+
+        self.assertEqual(payload['name'], 'equal_top2')
+        self.assertEqual(payload['top_k'], 2)
+        self.assertEqual(payload['temperature'], 1.25)
+        self.assertEqual(payload['best_epoch'], 7)
+        self.assertEqual(payload['reselected_at'], '2026-04-02 12:00:00')
+        self.assertEqual(payload['validation_folds'][0]['start_date'], '2024-02-01')
+        self.assertEqual(payload['validation_folds'][0]['purge_days'], 3)
+        self.assertIn('return_equal_top2', payload['validation_metrics'])
+        self.assertEqual(payload['validation_strategy_comparison'][1]['name'], 'softmax_top2')
+        self.assertEqual(payload['validation_fold_diagnostics'][1]['best_candidate']['name'], 'softmax_top2')
+        self.assertEqual(payload['validation_fold_diagnostics'][1]['start_date'], '2024-02-08')
+        self.assertEqual(payload['validation_regime_summary']['best_candidate_win_counts']['equal_top2'], 1)
+        self.assertEqual(payload['validation_regime_summary']['best_candidate_win_counts']['softmax_top2'], 1)
 
     def test_summarize_multi_seed_runs_aggregates_metrics_and_selects_best_run(self):
         run_summaries = [

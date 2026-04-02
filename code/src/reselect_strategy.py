@@ -1,7 +1,6 @@
 import argparse
 import json
 import os
-from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -16,8 +15,15 @@ from factor_store import load_factor_snapshot
 from factor_store import resolve_factor_pipeline
 from model import StockTransformer
 from experiments.metrics import build_strategy_candidates as build_strategy_candidates_shared
+from experiments.runner import build_strategy_export_payload
 from experiments.runner import summarize_experiment_run
 from experiments.splits import build_rolling_validation_folds as build_rolling_validation_folds_shared
+from train import PortfolioOptimizationLoss
+from train import build_validation_fold_loaders
+from train import evaluate_ranking_folds
+from train import preprocess_val_data
+from train import set_seed
+from train import split_train_val_by_last_month
 from utils import resolve_feature_indices
 
 
@@ -274,6 +280,14 @@ def main():
 
     print(f"重选评估 Loss: {eval_loss:.6f}")
     print("策略收益汇总:", run_summary["strategy_summary"])
+    print("策略对比:")
+    for strategy_row in run_summary["strategy_comparison"]:
+        print(
+            f"  - {strategy_row['name']}: "
+            f"mean={strategy_row['mean_return']:.6f}, "
+            f"std={strategy_row['return_std']:.6f}, "
+            f"ra={strategy_row['risk_adjusted_return']:.6f}"
+        )
 
     best_candidate = run_summary["best_candidate"]
     best_score = run_summary["best_score"]
@@ -290,43 +304,22 @@ def main():
             f"({str(fold_result['start_date'])[:10]} ~ {str(fold_result['end_date'])[:10]}): "
             f"best={fold_result['best_candidate']['name']}:{fold_result['best_score']:.6f}"
         )
+    regime_summary = run_summary["regime_summary"]
+    print(
+        "Regime 摘要:",
+        f"dominant={regime_summary['dominant_strategy']}, "
+        f"positive={regime_summary['positive_return_fold_count']}, "
+        f"negative={regime_summary['negative_return_fold_count']}, "
+        f"flat={regime_summary['flat_return_fold_count']}",
+    )
 
-    strategy_payload = {
-        "name": best_candidate["name"],
-        "top_k": int(best_candidate["top_k"]),
-        "weighting": best_candidate["weighting"],
-        "temperature": float(config.get("softmax_temperature", 1.0)),
-        "validation_objective": float(best_score),
-        "validation_return": float(best_candidate_return),
-        "validation_mode": validation_mode,
-        "strategy_selection_mode": config.get("strategy_selection_mode", "risk_adjusted"),
-        "strategy_risk_lambda": float(config.get("strategy_risk_lambda", 0.2)),
-        "rank_ic_mean": float(eval_metrics.get("rank_ic_mean", 0.0)),
-        "rank_ic_ir": float(eval_metrics.get("rank_ic_ir", 0.0)),
-        "validation_folds": [
-            {
-                "name": fold.get("name", ""),
-                "start_date": str(fold.get("start_date", ""))[:10],
-                "end_date": str(fold.get("end_date", ""))[:10],
-                "purge_days": int(fold.get("purge_days", 0) or 0),
-                "embargo_days": int(fold.get("embargo_days", 0) or 0),
-                "label_horizon": int(fold.get("label_horizon", config.get("label_horizon", 5)) or 0),
-            }
-            for fold in val_folds
-        ],
-        "validation_fold_diagnostics": [
-            {
-                "name": fold["name"],
-                "best_candidate": fold["best_candidate"]["name"],
-                "best_score": float(fold["best_score"]),
-                "num_samples": int(fold["num_samples"]),
-                "loss": float(fold["loss"]),
-            }
-            for fold in run_summary["fold_diagnostics"]
-        ],
-        "reselected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "source": "validation_reselect",
-    }
+    strategy_payload = build_strategy_export_payload(
+        run_summary=run_summary,
+        validation_folds=val_folds,
+        runtime_config=config,
+        source="validation_reselect",
+        exported_at_field="reselected_at",
+    )
 
     reselect_path = os.path.join(output_dir, "best_strategy_reselected.json")
     _dump_strategy(reselect_path, strategy_payload)

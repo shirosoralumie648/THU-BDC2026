@@ -22,6 +22,8 @@ from data_manager import save_data_manifest
 from experiments.metrics import build_strategy_candidates as build_strategy_candidates_shared
 from experiments.metrics import choose_best_strategy as choose_best_strategy_shared
 from experiments.metrics import format_strategy_metric_summary as format_strategy_metric_summary_shared
+from experiments.runner import build_strategy_export_payload
+from experiments.runner import summarize_experiment_run
 from experiments.splits import build_rolling_validation_folds as build_rolling_validation_folds_shared
 from graph.correlation_graph import build_correlation_prior_adjacency
 from graph.graph_builder import build_prior_graph_adjacency as build_prior_graph_adjacency_shared
@@ -1956,29 +1958,57 @@ def main():
             eval_loss, eval_metrics, fold_results = evaluate_ranking_folds(
                 model, val_fold_loaders, criterion, device, writer, epoch, strategy_candidates
             )
+            run_summary = summarize_experiment_run(
+                eval_loss=eval_loss,
+                eval_metrics=eval_metrics,
+                fold_results=fold_results,
+                strategy_candidates=strategy_candidates,
+                runtime_config=config,
+            )
             
             print(f"Eval Loss: {eval_loss:.4f}")
             for k, v in eval_metrics.items():
                 print(f"Eval {k}: {v:.4f}")
             print(
                 "Eval 策略收益汇总: "
-                + format_strategy_metric_summary(eval_metrics, strategy_candidates)
+                + run_summary['strategy_summary']
             )
-            for fold_result in fold_results:
-                fold_best_candidate, fold_best_score = choose_best_strategy(
-                    fold_result['metrics'], strategy_candidates
+            print("Eval 策略对比:")
+            for strategy_row in run_summary['strategy_comparison']:
+                print(
+                    f"  - {strategy_row['name']}: "
+                    f"mean={strategy_row['mean_return']:.4f}, "
+                    f"std={strategy_row['return_std']:.4f}, "
+                    f"ra={strategy_row['risk_adjusted_return']:.4f}"
+                )
+            for fold_result in run_summary['fold_diagnostics']:
+                fold_strategy_summary = ', '.join(
+                    (
+                        f"{row['name']}=mean:{row['mean_return']:.4f}"
+                        f"|std:{row['return_std']:.4f}"
+                        f"|ra:{row['risk_adjusted_return']:.4f}"
+                    )
+                    for row in fold_result['strategy_comparison']
                 )
                 print(
                     f"Eval {fold_result['name']} "
                     f"({fold_result['start_date'].date()} ~ {fold_result['end_date'].date()}) "
                     f"样本数: {fold_result['num_samples']} | "
                     f"Loss: {fold_result['loss']:.4f} | "
-                    f"best={fold_best_candidate['name']}:{fold_best_score:.4f}"
+                    f"best={fold_result['best_candidate']['name']}:{fold_result['best_score']:.4f}"
                 )
                 print(
                     "  策略收益: "
-                    + format_strategy_metric_summary(fold_result['metrics'], strategy_candidates)
+                    + fold_strategy_summary
                 )
+            regime_summary = run_summary['regime_summary']
+            print(
+                "Eval Regime 摘要: "
+                f"dominant={regime_summary['dominant_strategy']}, "
+                f"positive={regime_summary['positive_return_fold_count']}, "
+                f"negative={regime_summary['negative_return_fold_count']}, "
+                f"flat={regime_summary['flat_return_fold_count']}"
+            )
             
             # 学习率调度
             scheduler.step()
@@ -1986,8 +2016,9 @@ def main():
                 writer.add_scalar('train/learning_rate', scheduler.get_last_lr()[0], global_step=epoch)
             
 
-            best_candidate, current_final_score = choose_best_strategy(eval_metrics, strategy_candidates)
-            best_candidate_return = eval_metrics.get(f'return_{best_candidate["name"]}', current_final_score)
+            best_candidate = run_summary['best_candidate']
+            current_final_score = run_summary['best_score']
+            best_candidate_return = run_summary['best_return']
             print(
                 f"当前最优持仓策略: {best_candidate['name']} | "
                 f"验证目标值: {current_final_score:.4f} | "
@@ -2022,28 +2053,19 @@ def main():
                 best_epoch = epoch + 1
                 torch.save(model.state_dict(), os.path.join(output_dir, 'best_model.pth'))
                 with open(os.path.join(output_dir, 'best_strategy.json'), 'w') as f:
-                    json.dump({
-                        'name': best_candidate['name'],
-                        'top_k': best_candidate['top_k'],
-                        'weighting': best_candidate['weighting'],
-                        'temperature': config.get('softmax_temperature', 1.0),
-                        'validation_objective': current_final_score,
-                        'validation_return': best_candidate_return,
-                        'validation_mode': validation_mode,
-                        'strategy_selection_mode': config.get('strategy_selection_mode', 'risk_adjusted'),
-                        'strategy_risk_lambda': float(config.get('strategy_risk_lambda', 0.2)),
-                        'rank_ic_mean': eval_metrics.get('rank_ic_mean', 0.0),
-                        'rank_ic_ir': eval_metrics.get('rank_ic_ir', 0.0),
-                        'validation_folds': [
-                            {
-                                'name': fold['name'],
-                                'start_date': fold['start_date'].strftime('%Y-%m-%d'),
-                                'end_date': fold['end_date'].strftime('%Y-%m-%d'),
-                            }
-                            for fold in val_folds
-                        ],
-                        'best_epoch': best_epoch,
-                    }, f, indent=4, ensure_ascii=False)
+                    json.dump(
+                        build_strategy_export_payload(
+                            run_summary=run_summary,
+                            validation_folds=val_folds,
+                            runtime_config=config,
+                            source='training_validation',
+                            exported_at_field='saved_at',
+                            best_epoch=best_epoch,
+                        ),
+                        f,
+                        indent=4,
+                        ensure_ascii=False,
+                    )
                 print(f"保存最佳模型 - objective: {best_score:.4f}")
 
             monitor_value = eval_metrics.get(early_stop_monitor, None)
