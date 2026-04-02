@@ -16,8 +16,7 @@ from factor_store import load_factor_snapshot
 from factor_store import resolve_factor_pipeline
 from model import StockTransformer
 from experiments.metrics import build_strategy_candidates as build_strategy_candidates_shared
-from experiments.metrics import choose_best_strategy as choose_best_strategy_shared
-from experiments.metrics import format_strategy_metric_summary as format_strategy_metric_summary_shared
+from experiments.runner import summarize_experiment_run
 from experiments.splits import build_rolling_validation_folds as build_rolling_validation_folds_shared
 from utils import resolve_feature_indices
 
@@ -265,31 +264,31 @@ def main():
         epoch=0,
         strategy_candidates=strategy_candidates,
     )
+    run_summary = summarize_experiment_run(
+        eval_loss=eval_loss,
+        eval_metrics=eval_metrics,
+        fold_results=fold_results,
+        strategy_candidates=strategy_candidates,
+        runtime_config=config,
+    )
 
     print(f"重选评估 Loss: {eval_loss:.6f}")
-    print("策略收益汇总:", format_strategy_metric_summary_shared(eval_metrics, strategy_candidates))
+    print("策略收益汇总:", run_summary["strategy_summary"])
 
-    best_candidate, best_score = choose_best_strategy_shared(eval_metrics, strategy_candidates, config)
-    best_candidate_return = eval_metrics.get(
-        f"return_{best_candidate['name']}",
-        best_score,
-    )
+    best_candidate = run_summary["best_candidate"]
+    best_score = run_summary["best_score"]
+    best_candidate_return = run_summary["best_return"]
     print(
         f"验证集最优策略: {best_candidate['name']} | "
         f"objective={best_score:.6f} | mean_return={best_candidate_return:.6f} | "
         f"rank_ic_mean={eval_metrics.get('rank_ic_mean', 0.0):.6f}"
     )
 
-    for fold_result in fold_results:
-        fold_best_candidate, fold_best_score = choose_best_strategy_shared(
-            fold_result["metrics"],
-            strategy_candidates,
-            config,
-        )
+    for fold_result in run_summary["fold_diagnostics"]:
         print(
             f"  - {fold_result['name']} "
             f"({str(fold_result['start_date'])[:10]} ~ {str(fold_result['end_date'])[:10]}): "
-            f"best={fold_best_candidate['name']}:{fold_best_score:.6f}"
+            f"best={fold_result['best_candidate']['name']}:{fold_result['best_score']:.6f}"
         )
 
     strategy_payload = {
@@ -309,8 +308,21 @@ def main():
                 "name": fold.get("name", ""),
                 "start_date": str(fold.get("start_date", ""))[:10],
                 "end_date": str(fold.get("end_date", ""))[:10],
+                "purge_days": int(fold.get("purge_days", 0) or 0),
+                "embargo_days": int(fold.get("embargo_days", 0) or 0),
+                "label_horizon": int(fold.get("label_horizon", config.get("label_horizon", 5)) or 0),
             }
             for fold in val_folds
+        ],
+        "validation_fold_diagnostics": [
+            {
+                "name": fold["name"],
+                "best_candidate": fold["best_candidate"]["name"],
+                "best_score": float(fold["best_score"]),
+                "num_samples": int(fold["num_samples"]),
+                "loss": float(fold["loss"]),
+            }
+            for fold in run_summary["fold_diagnostics"]
         ],
         "reselected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "source": "validation_reselect",

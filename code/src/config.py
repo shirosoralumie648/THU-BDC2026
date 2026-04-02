@@ -161,6 +161,9 @@ config = {
     'rolling_val_num_folds': 4,
     'rolling_val_window_size': 20,
     'rolling_val_step_size': 20,
+    'rolling_val_purge_days': 0,
+    'rolling_val_embargo_days': 0,
+    'label_horizon': 5,
     'strategy_selection_mode': 'risk_adjusted',  # risk_adjusted | return
     'strategy_risk_lambda': 0.2,
     'selection_metric': 'auto',
