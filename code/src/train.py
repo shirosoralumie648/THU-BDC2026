@@ -16,6 +16,8 @@ from model import StockTransformer
 from data_manager import build_stock_industry_index as build_stock_industry_index_from_manager
 from data_manager import collect_data_sources
 from data_manager import load_market_dataset
+from data_manager import load_market_dataset_from_path
+from data_manager import load_train_dataset_from_build_manifest
 from data_manager import load_stock_to_industry_map
 from data_manager import resolve_industry_mapping_path
 from data_manager import save_data_manifest
@@ -2000,14 +2002,37 @@ def main():
         device_msg = "当前训练设备: cpu"
     print(device_msg)
     
-    # 1. 数据加载
-    full_df, data_file = load_market_dataset(config, 'train.csv')
-    print(f"训练数据文件: {data_file}")
     factor_pipeline = resolve_factor_pipeline(
         config['feature_num'],
         config['factor_store_path'],
         config['builtin_factor_registry_path'],
     )
+    dataset_manifest_train_path, dataset_manifest_info = load_train_dataset_from_build_manifest(config, factor_pipeline)
+    if dataset_manifest_info.get('enabled', False):
+        print(
+            f"dataset build manifest: {dataset_manifest_info.get('manifest_path', '')} "
+            f"(strict={dataset_manifest_info.get('strict', False)})"
+        )
+        for msg in dataset_manifest_info.get('warnings', []):
+            print(f"[manifest-warning] {msg}")
+        for msg in dataset_manifest_info.get('errors', []):
+            print(f"[manifest-error] {msg}")
+        if dataset_manifest_info.get('used', False):
+            print(
+                "manifest 元信息: "
+                f"build_id={dataset_manifest_info.get('build_id', '')}, "
+                f"feature_set_version={dataset_manifest_info.get('feature_set_version', '')}, "
+                f"factor_fingerprint={dataset_manifest_info.get('factor_fingerprint', '')}"
+            )
+
+    # 1. 数据加载（优先使用 build-dataset manifest 指向的数据集）
+    if dataset_manifest_train_path:
+        full_df, data_file = load_market_dataset_from_path(config, dataset_manifest_train_path)
+        print(f"训练数据文件(manifest): {data_file}")
+    else:
+        full_df, data_file = load_market_dataset(config, 'train.csv')
+        print(f"训练数据文件: {data_file}")
+
     snapshot_path = os.path.join(output_dir, 'active_factors.json')
     snapshot_info = save_factor_snapshot(factor_pipeline, snapshot_path)
     factor_pipeline['snapshot_meta'] = snapshot_info.get('snapshot', {})

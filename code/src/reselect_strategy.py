@@ -9,6 +9,8 @@ import torch
 
 from config import config
 from data_manager import load_market_dataset
+from data_manager import load_market_dataset_from_path
+from data_manager import load_train_dataset_from_build_manifest
 from factor_store import load_factor_snapshot
 from factor_store import resolve_factor_pipeline
 from model import StockTransformer
@@ -188,8 +190,31 @@ def main():
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"未找到模型文件: {model_path}")
 
-    full_df, data_file = load_market_dataset(config, "train.csv")
-    print(f"重选策略数据文件: {data_file}")
+    feature_pipeline = _load_feature_pipeline(output_dir)
+    dataset_manifest_train_path, dataset_manifest_info = load_train_dataset_from_build_manifest(config, feature_pipeline)
+    if dataset_manifest_info.get('enabled', False):
+        print(
+            f"dataset build manifest: {dataset_manifest_info.get('manifest_path', '')} "
+            f"(strict={dataset_manifest_info.get('strict', False)})"
+        )
+        for msg in dataset_manifest_info.get('warnings', []):
+            print(f"[manifest-warning] {msg}")
+        for msg in dataset_manifest_info.get('errors', []):
+            print(f"[manifest-error] {msg}")
+        if dataset_manifest_info.get('used', False):
+            print(
+                "manifest 元信息: "
+                f"build_id={dataset_manifest_info.get('build_id', '')}, "
+                f"feature_set_version={dataset_manifest_info.get('feature_set_version', '')}, "
+                f"factor_fingerprint={dataset_manifest_info.get('factor_fingerprint', '')}"
+            )
+
+    if dataset_manifest_train_path:
+        full_df, data_file = load_market_dataset_from_path(config, dataset_manifest_train_path)
+        print(f"重选策略数据文件(manifest): {data_file}")
+    else:
+        full_df, data_file = load_market_dataset(config, "train.csv")
+        print(f"重选策略数据文件: {data_file}")
 
     validation_mode = str(config.get("validation_mode", "rolling")).lower()
     if validation_mode == "rolling":
@@ -207,7 +232,6 @@ def main():
     stock_ids = sorted(full_df["股票代码"].unique())
     stockid2idx = {sid: idx for idx, sid in enumerate(stock_ids)}
 
-    feature_pipeline = _load_feature_pipeline(output_dir)
     val_data, features = preprocess_val_data(val_df, feature_pipeline, stockid2idx=stockid2idx)
 
     saved_features = _load_effective_features(output_dir)

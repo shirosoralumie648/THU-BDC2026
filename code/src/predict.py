@@ -17,6 +17,8 @@ from model import StockTransformer
 from data_manager import build_stock_industry_index as build_stock_industry_index_from_manager
 from data_manager import collect_data_sources
 from data_manager import load_market_dataset
+from data_manager import load_market_dataset_from_path
+from data_manager import load_train_dataset_from_build_manifest
 from data_manager import load_stock_to_industry_map
 from data_manager import save_data_manifest
 from utils import apply_cross_sectional_normalization
@@ -251,8 +253,48 @@ def main():
 	manifest_path = save_data_manifest(config['output_dir'], data_manifest, filename='data_manifest_predict.json')
 	print(f'已生成预测数据源清单: {manifest_path}')
 
-	raw_df, data_file = load_market_dataset(config, 'train.csv', dtype={'股票代码': str})
-	print(f'预测输入数据文件: {data_file}')
+	if os.path.exists(factor_snapshot_path):
+		feature_pipeline = load_factor_snapshot(factor_snapshot_path)
+		print(
+			f'加载训练因子快照: {factor_snapshot_path} | '
+			f'fingerprint={feature_pipeline.get("factor_fingerprint", "")}'
+		)
+	else:
+		feature_pipeline = resolve_factor_pipeline(
+			config['feature_num'],
+			config['factor_store_path'],
+			config['builtin_factor_registry_path'],
+		)
+		print(f'未找到训练因子快照，回退到当前因子配置: {config["factor_store_path"]}')
+
+	dataset_manifest_train_path, dataset_manifest_info = load_train_dataset_from_build_manifest(config, feature_pipeline)
+	if dataset_manifest_info.get('enabled', False):
+		print(
+			f"dataset build manifest: {dataset_manifest_info.get('manifest_path', '')} "
+			f"(strict={dataset_manifest_info.get('strict', False)})"
+		)
+		for msg in dataset_manifest_info.get('warnings', []):
+			print(f"[manifest-warning] {msg}")
+		for msg in dataset_manifest_info.get('errors', []):
+			print(f"[manifest-error] {msg}")
+		if dataset_manifest_info.get('used', False):
+			print(
+				"manifest 元信息: "
+				f"build_id={dataset_manifest_info.get('build_id', '')}, "
+				f"feature_set_version={dataset_manifest_info.get('feature_set_version', '')}, "
+				f"factor_fingerprint={dataset_manifest_info.get('factor_fingerprint', '')}"
+			)
+
+	if dataset_manifest_train_path:
+		raw_df, data_file = load_market_dataset_from_path(
+			config,
+			dataset_manifest_train_path,
+			dtype={'股票代码': str},
+		)
+		print(f'预测输入数据文件(manifest): {data_file}')
+	else:
+		raw_df, data_file = load_market_dataset(config, 'train.csv', dtype={'股票代码': str})
+		print(f'预测输入数据文件: {data_file}')
 	raw_df['股票代码'] = raw_df['股票代码'].astype(str).str.zfill(6)
 	raw_df['日期'] = pd.to_datetime(raw_df['日期'])
 	latest_date = raw_df['日期'].max()
@@ -291,19 +333,6 @@ def main():
 			)
 		else:
 			print('未构建到有效行业映射，行业虚拟股将回退为空映射。')
-	if os.path.exists(factor_snapshot_path):
-		feature_pipeline = load_factor_snapshot(factor_snapshot_path)
-		print(
-			f'加载训练因子快照: {factor_snapshot_path} | '
-			f'fingerprint={feature_pipeline.get("factor_fingerprint", "")}'
-		)
-	else:
-		feature_pipeline = resolve_factor_pipeline(
-			config['feature_num'],
-			config['factor_store_path'],
-			config['builtin_factor_registry_path'],
-		)
-		print(f'未找到训练因子快照，回退到当前因子配置: {config["factor_store_path"]}')
 
 	processed, features = preprocess_predict_data(raw_df, stockid2idx, feature_pipeline)
 	if os.path.exists(effective_features_path):
