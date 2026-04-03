@@ -10,7 +10,7 @@ from config import config
 from data_manager import load_market_dataset
 from data_manager import load_market_dataset_from_path
 from data_manager import load_train_dataset_from_build_manifest
-from data_manager import log_dataset_manifest_info
+from data_manager import load_stock_to_industry_map
 from factor_store import load_factor_snapshot
 from factor_store import resolve_factor_pipeline
 from model import StockTransformer
@@ -192,14 +192,29 @@ def main():
 
     feature_pipeline = _load_feature_pipeline(output_dir)
     dataset_manifest_train_path, dataset_manifest_info = load_train_dataset_from_build_manifest(config, feature_pipeline)
-    log_dataset_manifest_info(dataset_manifest_info, label='reselect')
+    if dataset_manifest_info.get('enabled', False):
+        print(
+            f"dataset build manifest: {dataset_manifest_info.get('manifest_path', '')} "
+            f"(strict={dataset_manifest_info.get('strict', False)})"
+        )
+        for msg in dataset_manifest_info.get('warnings', []):
+            print(f"[manifest-warning] {msg}")
+        for msg in dataset_manifest_info.get('errors', []):
+            print(f"[manifest-error] {msg}")
+        if dataset_manifest_info.get('used', False):
+            print(
+                "manifest 元信息: "
+                f"build_id={dataset_manifest_info.get('build_id', '')}, "
+                f"feature_set_version={dataset_manifest_info.get('feature_set_version', '')}, "
+                f"factor_fingerprint={dataset_manifest_info.get('factor_fingerprint', '')}"
+            )
 
     if dataset_manifest_train_path:
         full_df, data_file = load_market_dataset_from_path(config, dataset_manifest_train_path)
-        print(f"重选策略数据文件(manifest-train): {data_file}")
+        print(f"重选策略数据文件(manifest): {data_file}")
     else:
         full_df, data_file = load_market_dataset(config, "train.csv")
-        print(f"重选策略数据文件(legacy-train): {data_file}")
+        print(f"重选策略数据文件: {data_file}")
 
     validation_mode = str(config.get("validation_mode", "rolling")).lower()
     if validation_mode == "rolling":
