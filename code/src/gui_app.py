@@ -6,6 +6,7 @@ from gui_console.common import ensure_gui_dirs
 from gui_console.common import ensure_gui_state
 from gui_console.common import get_job
 from gui_console.common import inject_terminal_theme
+from gui_console.common import job_status_text
 from gui_console.common import render_metric_card
 from gui_console.common import render_page_hero
 from gui_console.common import summarize_jobs

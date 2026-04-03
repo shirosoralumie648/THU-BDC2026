@@ -9,6 +9,7 @@ import streamlit as st
 from gui_console.common import apply_dark_figure_style
 from gui_console.common import build_env
 from gui_console.common import get_job
+from gui_console.common import job_status_text
 from gui_console.common import load_csv_cached
 from gui_console.common import load_effective_config
 from gui_console.common import project_path

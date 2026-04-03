@@ -39,12 +39,40 @@ def inject_terminal_theme() -> None:
             --terminal-border: rgba(76, 201, 240, 0.18);
             --terminal-border-strong: rgba(76, 201, 240, 0.32);
             --terminal-text: #e6edf3;
-            --terminal-muted: #7d93a8;
+            --terminal-muted: #8ba3b8;
             --terminal-accent: #4cc9f0;
             --terminal-accent-2: #90e0ef;
             --terminal-success: #39d98a;
             --terminal-warning: #ffb020;
             --terminal-danger: #ff6b6b;
+
+            --font-family: 'Inter', 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', system-ui, -apple-system, sans-serif;
+            --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+
+            --space-xs: 0.25rem;
+            --space-sm: 0.5rem;
+            --space-md: 1rem;
+            --space-lg: 1.5rem;
+            --space-xl: 2rem;
+
+            --radius-sm: 8px;
+            --radius-md: 12px;
+            --radius-lg: 18px;
+            --radius-xl: 20px;
+
+            --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.15);
+            --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.22);
+            --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.28);
+
+            --transition-fast: 150ms ease;
+            --transition-normal: 250ms ease;
+            --transition-slow: 400ms ease;
+        }
+
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+        * {
+            font-family: var(--font-family) !important;
         }
 
         .stApp {
@@ -53,11 +81,38 @@ def inject_terminal_theme() -> None:
                 radial-gradient(circle at top left, rgba(144, 224, 239, 0.08), transparent 20%),
                 linear-gradient(180deg, #071018 0%, #09131c 100%);
             color: var(--terminal-text);
+            font-size: 16px;
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            text-rendering: optimizeLegibility;
+        }
+
+        .stApp, .stApp p, .stApp label, .stApp span, .stMarkdown, .stText, .stCaption {
+            color: var(--terminal-text);
+        }
+
+        .stMarkdown, .stText, .stCaption {
+            font-size: 1rem;
+            line-height: 1.65;
         }
 
         .stApp [data-testid="stSidebar"] {
             background: linear-gradient(180deg, rgba(6, 13, 19, 0.98), rgba(9, 16, 24, 0.98));
             border-right: 1px solid rgba(76, 201, 240, 0.12);
+            padding: var(--space-md);
+        }
+
+        .stApp [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] {
+            font-size: 0.95rem;
+        }
+
+        .stSidebar .stRadio label,
+        .stSidebar .stCheckbox label,
+        .stSidebar .stSelectbox label {
+            font-size: 0.95rem;
+            font-weight: 500;
+            color: var(--terminal-text);
         }
 
         .terminal-shell {
@@ -67,125 +122,561 @@ def inject_terminal_theme() -> None:
         .terminal-hero {
             background: linear-gradient(135deg, rgba(13, 22, 32, 0.95), rgba(9, 16, 24, 0.92));
             border: 1px solid var(--terminal-border-strong);
-            border-radius: 20px;
-            padding: 1.2rem 1.35rem;
-            margin-bottom: 1rem;
-            box-shadow: 0 16px 36px rgba(0, 0, 0, 0.24);
+            border-radius: var(--radius-xl);
+            padding: var(--space-lg) var(--space-lg);
+            margin-bottom: var(--space-md);
+            box-shadow: var(--shadow-lg);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .terminal-hero::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(76, 201, 240, 0.4), transparent);
         }
 
         .terminal-eyebrow {
             color: var(--terminal-accent);
             text-transform: uppercase;
-            letter-spacing: 0.16em;
-            font-size: 0.72rem;
+            letter-spacing: 0.14em;
+            font-size: 0.8rem;
             font-weight: 700;
-            margin-bottom: 0.35rem;
+            margin-bottom: var(--space-sm);
+            opacity: 0.95;
         }
 
         .terminal-title {
             color: var(--terminal-text);
-            font-size: 2rem;
+            font-size: 2.25rem;
             font-weight: 800;
-            line-height: 1.08;
+            line-height: 1.15;
             margin: 0;
+            letter-spacing: -0.02em;
         }
 
         .terminal-subtitle {
             color: var(--terminal-muted);
-            font-size: 0.95rem;
-            margin-top: 0.45rem;
+            font-size: 1.05rem;
+            margin-top: var(--space-sm);
             margin-bottom: 0;
+            line-height: 1.5;
         }
 
         .terminal-panel {
-            background: linear-gradient(180deg, var(--terminal-panel), var(--terminal-panel-alt));
-            border: 1px solid var(--terminal-border);
-            border-radius: 18px;
-            padding: 1rem 1.1rem;
-            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02), 0 12px 28px rgba(0, 0, 0, 0.18);
-            margin-bottom: 0.9rem;
+            background: linear-gradient(180deg, rgba(11, 19, 28, 0.98), rgba(8, 14, 21, 0.96));
+            border: 1px solid rgba(144, 224, 239, 0.18);
+            border-radius: var(--radius-lg);
+            padding: var(--space-md) var(--space-md);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03), var(--shadow-md);
+            margin-bottom: var(--space-md);
+            transition: box-shadow var(--transition-normal), border-color var(--transition-normal);
+        }
+
+        .terminal-panel:hover {
+            border-color: rgba(144, 224, 239, 0.28);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), var(--shadow-lg);
+        }
+
+        .stButton > button {
+            background: rgba(19, 32, 46, 0.92);
+            color: var(--terminal-text);
+            border: 1px solid rgba(76, 201, 240, 0.24);
+            border-radius: var(--radius-md);
+            font-size: 0.95rem;
+            font-weight: 600;
+            padding: 0.6rem 1.2rem;
+            transition: all var(--transition-fast);
+            cursor: pointer;
+        }
+
+        .stButton > button:hover {
+            background: rgba(29, 42, 56, 0.95);
+            border-color: rgba(76, 201, 240, 0.4);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }
+
+        .stButton > button:focus {
+            outline: 2px solid var(--terminal-accent);
+            outline-offset: 2px;
+        }
+
+        .stButton > button:active {
+            transform: translateY(0);
+        }
+
+        .stButton > button[kind="primary"] {
+            background: linear-gradient(135deg, rgba(76, 201, 240, 0.92), rgba(67, 97, 238, 0.92));
+            color: #03131c;
+            border-color: transparent;
+            font-weight: 700;
+        }
+
+        .stButton > button[kind="primary"]:hover {
+            background: linear-gradient(135deg, rgba(86, 211, 250, 0.95), rgba(77, 107, 248, 0.95));
+            box-shadow: 0 4px 16px rgba(76, 201, 240, 0.3);
+        }
+
+        .stTextInput input, .stNumberInput input, .stTextArea textarea, .stSelectbox div[data-baseweb="select"] > div {
+            background: rgba(10, 17, 24, 0.94) !important;
+            color: var(--terminal-text) !important;
+            border-color: rgba(144, 224, 239, 0.18) !important;
+            border-radius: var(--radius-sm) !important;
+            font-size: 0.95rem !important;
+            padding: 0.6rem 0.85rem !important;
+            transition: border-color var(--transition-fast), box-shadow var(--transition-fast) !important;
+        }
+
+        .stTextInput input:focus, .stNumberInput input:focus, .stTextArea textarea:focus, .stSelectbox div[data-baseweb="select"] > div:focus-within {
+            border-color: rgba(76, 201, 240, 0.5) !important;
+            box-shadow: 0 0 0 3px rgba(76, 201, 240, 0.15) !important;
+            outline: none !important;
+        }
+
+        .stDataFrame, div[data-testid="stMetric"] {
+            color: var(--terminal-text);
+        }
+
+        .stDataFrame th, .stDataFrame td {
+            font-size: 0.9rem !important;
+            padding: 0.65rem 0.85rem !important;
+        }
+
+        .stDataFrame thead th {
+            font-weight: 600 !important;
+            background: rgba(11, 19, 28, 0.95) !important;
+        }
+
+        .stDataFrame tbody tr:hover {
+            background: rgba(76, 201, 240, 0.06) !important;
         }
 
         .terminal-panel.tight {
-            padding: 0.8rem 0.95rem;
+            padding: var(--space-md) var(--space-md);
         }
 
         .terminal-kpi-label {
             color: var(--terminal-muted);
-            font-size: 0.72rem;
+            font-size: 0.8rem;
             text-transform: uppercase;
-            letter-spacing: 0.12em;
-            font-weight: 700;
-            margin-bottom: 0.45rem;
+            letter-spacing: 0.1em;
+            font-weight: 600;
+            margin-bottom: var(--space-xs);
         }
 
         .terminal-kpi-value {
             color: var(--terminal-text);
-            font-size: 1.55rem;
+            font-size: 1.75rem;
             font-weight: 800;
-            line-height: 1.15;
+            line-height: 1.2;
+            letter-spacing: -0.01em;
         }
 
         .terminal-kpi-hint {
             color: var(--terminal-muted);
-            font-size: 0.82rem;
-            margin-top: 0.45rem;
+            font-size: 0.875rem;
+            margin-top: var(--space-sm);
+            line-height: 1.4;
         }
 
         .terminal-badge {
             display: inline-flex;
             align-items: center;
-            gap: 0.35rem;
-            padding: 0.22rem 0.62rem;
+            gap: 0.4rem;
+            padding: 0.3rem 0.75rem;
             border-radius: 999px;
-            font-size: 0.72rem;
+            font-size: 0.8rem;
             font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.08em;
+            letter-spacing: 0.06em;
             border: 1px solid transparent;
+            transition: all var(--transition-fast);
         }
 
         .terminal-badge-running {
             color: var(--terminal-accent);
             background: rgba(76, 201, 240, 0.12);
-            border-color: rgba(76, 201, 240, 0.22);
+            border-color: rgba(76, 201, 240, 0.25);
         }
 
         .terminal-badge-success {
             color: var(--terminal-success);
             background: rgba(57, 217, 138, 0.12);
-            border-color: rgba(57, 217, 138, 0.22);
+            border-color: rgba(57, 217, 138, 0.25);
         }
 
         .terminal-badge-failed {
             color: var(--terminal-danger);
             background: rgba(255, 107, 107, 0.12);
-            border-color: rgba(255, 107, 107, 0.22);
+            border-color: rgba(255, 107, 107, 0.25);
         }
 
         .terminal-badge-idle, .terminal-badge-warning {
             color: var(--terminal-warning);
             background: rgba(255, 176, 32, 0.12);
-            border-color: rgba(255, 176, 32, 0.22);
+            border-color: rgba(255, 176, 32, 0.25);
         }
 
         .terminal-section-title {
             color: var(--terminal-text);
-            font-size: 1rem;
+            font-size: 1.1rem;
             font-weight: 700;
-            margin-bottom: 0.8rem;
+            margin-bottom: var(--space-md);
+            padding-bottom: var(--space-sm);
+            border-bottom: 1px solid rgba(76, 201, 240, 0.12);
         }
 
         .terminal-help {
             color: var(--terminal-muted);
-            font-size: 0.84rem;
-            margin-top: 0.2rem;
+            font-size: 0.9rem;
+            margin-top: var(--space-sm);
+            line-height: 1.5;
         }
 
         .terminal-divider {
             height: 1px;
             background: linear-gradient(90deg, rgba(76, 201, 240, 0.22), rgba(76, 201, 240, 0));
-            margin: 0.9rem 0 1rem 0;
+            margin: var(--space-lg) 0 var(--space-md) 0;
+        }
+
+        .st-expander {
+            border: 1px solid rgba(76, 201, 240, 0.12) !important;
+            border-radius: var(--radius-md) !important;
+            background: rgba(11, 19, 28, 0.6) !important;
+            overflow: hidden;
+        }
+
+        .st-expander > div > div > button {
+            color: var(--terminal-text) !important;
+            font-weight: 600 !important;
+            font-size: 0.95rem !important;
+        }
+
+        .st-expander:hover {
+            border-color: rgba(76, 201, 240, 0.2) !important;
+        }
+
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 0.5rem;
+            border-bottom: 1px solid rgba(76, 201, 240, 0.12);
+        }
+
+        .stTabs [data-baseweb="tab"] {
+            color: var(--terminal-muted) !important;
+            font-weight: 600 !important;
+            font-size: 0.95rem !important;
+            padding: 0.75rem 1.25rem !important;
+            border-radius: var(--radius-sm) var(--radius-sm) 0 0 !important;
+            transition: all var(--transition-fast);
+        }
+
+        .stTabs [data-baseweb="tab"]:hover {
+            color: var(--terminal-text) !important;
+            background: rgba(76, 201, 240, 0.06) !important;
+        }
+
+        .stTabs [aria-selected="true"] {
+            color: var(--terminal-accent) !important;
+            border-bottom: 2px solid var(--terminal-accent) !important;
+        }
+
+        .stTabs [data-baseweb="tab"]:focus {
+            outline: 2px solid var(--terminal-accent);
+            outline-offset: -2px;
+        }
+
+        .stProgress > div > div > div > div {
+            background: linear-gradient(90deg, var(--terminal-accent), var(--terminal-accent-2));
+            border-radius: 999px;
+        }
+
+        .stProgress > div > div > div {
+            background: rgba(76, 201, 240, 0.12);
+            border-radius: 999px;
+        }
+
+        .stAlert {
+            border-radius: var(--radius-md);
+            padding: var(--space-md);
+        }
+
+        .stSuccess {
+            background: rgba(57, 217, 138, 0.12) !important;
+            border: 1px solid rgba(57, 217, 138, 0.25) !important;
+        }
+
+        .stWarning {
+            background: rgba(255, 176, 32, 0.12) !important;
+            border: 1px solid rgba(255, 176, 32, 0.25) !important;
+        }
+
+        .stError {
+            background: rgba(255, 107, 107, 0.12) !important;
+            border: 1px solid rgba(255, 107, 107, 0.25) !important;
+        }
+
+        .stInfo {
+            background: rgba(76, 201, 240, 0.12) !important;
+            border: 1px solid rgba(76, 201, 240, 0.25) !important;
+        }
+
+        div[data-testid="stMetricLabel"] {
+            color: var(--terminal-muted) !important;
+            font-size: 0.85rem !important;
+            font-weight: 500 !important;
+        }
+
+        div[data-testid="stMetricValue"] {
+            color: var(--terminal-text) !important;
+            font-size: 1.5rem !important;
+            font-weight: 700 !important;
+        }
+
+        div[data-testid="stMetricDelta"] {
+            font-size: 0.85rem !important;
+        }
+
+        .stSelectbox [data-testid="stSelectbox"] {
+            background: rgba(10, 17, 24, 0.94);
+            border-radius: var(--radius-sm);
+        }
+
+        .streamlit-expanderHeader {
+            color: var(--terminal-text) !important;
+            font-weight: 600 !important;
+        }
+
+        code, pre, .stCodeBlock code {
+            font-family: var(--font-mono) !important;
+            font-size: 0.875rem !important;
+            line-height: 1.6 !important;
+        }
+
+        pre {
+            background: rgba(7, 16, 24, 0.95) !important;
+            border: 1px solid rgba(76, 201, 240, 0.12) !important;
+            border-radius: var(--radius-md) !important;
+            padding: var(--space-md) !important;
+        }
+
+        code {
+            background: rgba(76, 201, 240, 0.08) !important;
+            padding: 0.15rem 0.4rem !important;
+            border-radius: 4px !important;
+            color: var(--terminal-accent-2) !important;
+        }
+
+        pre code {
+            background: transparent !important;
+            padding: 0 !important;
+            color: var(--terminal-text) !important;
+        }
+
+        @media (max-width: 768px) {
+            .terminal-title {
+                font-size: 1.75rem;
+            }
+
+            .terminal-subtitle {
+                font-size: 0.95rem;
+            }
+
+            .terminal-kpi-value {
+                font-size: 1.4rem;
+            }
+
+            .terminal-panel {
+                padding: var(--space-md);
+                margin-bottom: var(--space-sm);
+            }
+
+            .stApp [data-testid="stSidebar"] {
+                width: 100% !important;
+                position: relative !important;
+            }
+
+            div[data-testid="stMetricValue"] {
+                font-size: 1.25rem !important;
+            }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            * {
+                transition: none !important;
+                animation: none !important;
+            }
+        }
+
+        .visually-hidden {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        [data-testid="stSidebarNav"] {
+            gap: 0.5rem;
+        }
+
+        .stSlider > div > div > div {
+            background: rgba(76, 201, 240, 0.2) !important;
+        }
+
+        .stSlider > div > div > div > div {
+            background: var(--terminal-accent) !important;
+        }
+
+        [data-testid="stToolbar"],
+        [data-testid="stMainMenu"],
+        [data-testid="stAppDeployButton"],
+        [data-testid="stExpandSidebarButton"],
+        .st-emotion-cache-14vh5up,
+        .st-emotion-cache-jma0kd,
+        .st-emotion-cache-8ezv7j,
+        .st-emotion-cache-scp8yw,
+        .st-emotion-cache-1p1m4ay,
+        .st-emotion-cache-egm30d,
+        .st-emotion-cache-1wbqy5l,
+        .st-emotion-cache-czk5ss,
+        .st-emotion-cache-nsoqg8,
+        .st-emotion-cache-5r6ut5 {
+            background-color: var(--terminal-bg) !important;
+            color: var(--terminal-text) !important;
+        }
+
+        [data-testid="stToolbar"] button,
+        [data-testid="stMainMenu"] button,
+        [data-testid="stAppDeployButton"] button,
+        [data-testid="stExpandSidebarButton"] button {
+            color: var(--terminal-text) !important;
+            background: transparent !important;
+        }
+
+        [data-testid="stToolbar"] button:hover,
+        [data-testid="stMainMenu"] button:hover,
+        [data-testid="stAppDeployButton"] button:hover,
+        [data-testid="stExpandSidebarButton"] button:hover {
+            background: rgba(76, 201, 240, 0.1) !important;
+        }
+
+        [data-testid="stMainMenu"] svg,
+        [data-testid="stExpandSidebarButton"] svg {
+            fill: var(--terminal-text) !important;
+        }
+
+        .st-emotion-cache-2x5h05 {
+            color: var(--terminal-text) !important;
+        }
+
+        .stAppDeployButton span {
+            color: var(--terminal-text) !important;
+        }
+
+        header[data-testid="stHeader"] {
+            background-color: var(--terminal-bg) !important;
+            border-bottom: 1px solid rgba(76, 201, 240, 0.12) !important;
+        }
+
+        header[data-testid="stHeader"] [data-testid="stToolbarActions"] {
+            background-color: var(--terminal-bg) !important;
+        }
+
+        .st-emotion-cache-1j22a0y {
+            background-color: var(--terminal-bg) !important;
+            border-bottom: 1px solid rgba(76, 201, 240, 0.12) !important;
+        }
+
+        .stDataFrame,
+        .stDataFrame > div,
+        .dataframe,
+        .dataframe > div,
+        .dvn-scroller,
+        .dvn-scroll-inner,
+        .dvn-scroll-inner > div,
+        .dvn-stack,
+        [data-testid="stDataFrame"],
+        [data-testid="stDataFrame"] > div,
+        [data-testid="stDataFrame"] .st-kGhgZd,
+        .st-kGhgZd,
+        .st-kGhgZd > div {
+            background-color: var(--terminal-bg) !important;
+            color: var(--terminal-text) !important;
+        }
+
+        .stDataFrame table,
+        .stDataFrame th,
+        .stDataFrame td,
+        .dataframe table,
+        table {
+            background-color: var(--terminal-bg) !important;
+            color: var(--terminal-text) !important;
+            border-color: rgba(76, 201, 240, 0.15) !important;
+        }
+
+        .stDataFrame th,
+        [data-testid="stDataFrame"] thead th {
+            background-color: rgba(11, 19, 28, 0.98) !important;
+            color: var(--terminal-text) !important;
+            font-weight: 600 !important;
+        }
+
+        .stDataFrame td,
+        [data-testid="stDataFrame"] tbody td {
+            background-color: var(--terminal-bg) !important;
+            color: var(--terminal-text) !important;
+        }
+
+        .stDataFrame tbody tr:hover,
+        [data-testid="stDataFrame"] tbody tr:hover {
+            background-color: rgba(76, 201, 240, 0.08) !important;
+        }
+
+        .dvn-scroll-handle,
+        .dvn-scroll-handle:hover {
+            background-color: rgba(76, 201, 240, 0.2) !important;
+        }
+
+        .dvn-cell,
+        .dvn-cell text,
+        [data-testid="stDataFrame"] .dvn-cell {
+            fill: var(--terminal-text) !important;
+            color: var(--terminal-text) !important;
+        }
+
+        .st-ae,
+        [data-testid="stSelectbox"] {
+            background-color: var(--terminal-bg) !important;
+        }
+
+        .st-af,
+        .st-ag,
+        [data-testid="stVegaLiteChart"],
+        [data-testid="stDeckGlChart"] {
+            background-color: transparent !important;
+        }
+
+        [data-testid="stPlotlyChart"],
+        [data-testid="stPlotlyChart"] > div {
+            background-color: rgba(7, 16, 24, 0.95) !important;
+        }
+
+        .js-plotly-plot .plotly .mainplot,
+        .js-plotly-plot .plotly {
+            background-color: rgba(7, 16, 24, 0.95) !important;
+        }
+
+        body {
+            background-color: var(--terminal-bg) !important;
         }
         </style>
         """,
