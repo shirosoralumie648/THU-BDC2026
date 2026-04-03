@@ -15,7 +15,11 @@ from factor_store import resolve_factor_pipeline
 from factor_store import set_factor_enabled
 from factor_store import upsert_builtin_override
 from factor_store import upsert_custom_factor
+from gui_console.common import apply_dark_figure_style
 from gui_console.common import load_csv_cached
+from gui_console.common import render_metric_card
+from gui_console.common import render_page_hero
+from gui_console.common import render_section_header
 from utils import apply_cross_sectional_normalization
 
 
@@ -157,20 +161,17 @@ def _plot_distribution(df: pd.DataFrame, factor_name: str, norm_method: str) -> 
             marker_color='#f6bd16',
         )
     )
-    fig.update_layout(
-        barmode='overlay',
-        template='plotly_white',
-        margin={'l': 20, 'r': 20, 't': 30, 'b': 20},
-        title=f'因子分布对比: {factor_name}',
-        xaxis_title='值',
-        yaxis_title='频次',
-        height=380,
-    )
+    fig = apply_dark_figure_style(fig, title=f'因子分布对比: {factor_name}', height=380)
+    fig.update_layout(barmode='overlay', xaxis_title='值', yaxis_title='频次')
     return fig
 
 
 def render_factor_lab() -> None:
-    st.subheader('因子实验室 (Factor Lab)')
+    render_page_hero(
+        'Factor Lab',
+        '因子资产管理、表达式验证与分布研究工作台。',
+        eyebrow='Factor Research',
+    )
 
     feature_set = st.selectbox('因子集合', ['39', '158+39'], index=1 if config['feature_num'] == '158+39' else 0)
     store_path = st.text_input('因子存储路径', value=config['factor_store_path'])
@@ -182,168 +183,180 @@ def render_factor_lab() -> None:
         return
 
     table_df = _factor_table_df(pipeline)
-    st.caption(
-        f"builtin={pipeline['summary']['builtin_enabled']}/{pipeline['summary']['builtin_total']} | "
-        f"custom={pipeline['summary']['custom_enabled']}/{pipeline['summary']['custom_total']} | "
-        f"active={pipeline['summary']['active_total']}"
-    )
 
-    st.dataframe(
-        table_df[['name', 'enabled', 'source', 'group', 'overridden', 'description']],
-        width='stretch',
-        height=320,
-    )
+    summary_cols = st.columns(4)
+    with summary_cols[0]:
+        render_metric_card('Builtin Enabled', str(pipeline['summary']['builtin_enabled']), f"/ {pipeline['summary']['builtin_total']}")
+    with summary_cols[1]:
+        render_metric_card('Custom Enabled', str(pipeline['summary']['custom_enabled']), f"/ {pipeline['summary']['custom_total']}")
+    with summary_cols[2]:
+        render_metric_card('Active Total', str(pipeline['summary']['active_total']), '当前启用因子')
+    with summary_cols[3]:
+        render_metric_card('Feature Set', feature_set, store_path)
 
-    st.markdown('### 因子启用/禁用')
-    selected_names = st.multiselect('选择因子（支持批量）', table_df['name'].tolist(), key='factor_batch_select')
-    col_enable, col_disable = st.columns(2)
+    left_col, right_col = st.columns([0.95, 1.25])
 
-    if col_enable.button('批量启用'):
-        try:
-            for name in selected_names:
-                set_factor_enabled(store_path, feature_set, name, True)
-            st.success(f'已启用 {len(selected_names)} 个因子。')
-            st.rerun()
-        except Exception as exc:
-            st.error(f'启用失败: {exc}')
+    with left_col:
+        render_section_header('批量开关', '快速启用/禁用一组因子。')
+        selected_names = st.multiselect('选择因子（支持批量）', table_df['name'].tolist(), key='factor_batch_select')
+        col_enable, col_disable = st.columns(2)
 
-    if col_disable.button('批量禁用'):
-        try:
-            for name in selected_names:
-                set_factor_enabled(store_path, feature_set, name, False)
-            st.success(f'已禁用 {len(selected_names)} 个因子。')
-            st.rerun()
-        except Exception as exc:
-            st.error(f'禁用失败: {exc}')
-
-    st.markdown('### 因子编辑器')
-    editor_mode = st.radio('编辑模式', ['编辑现有因子', '新建自定义因子'], horizontal=True)
-
-    source_path = st.text_input('表达式校验数据源', value=resolve_dataset_path(config, 'train.csv'), key='factor_validate_source')
-    sample_stocks = st.slider('校验样本股票数', min_value=5, max_value=80, value=30, step=1)
-    sample_rows = st.slider('每只股票样本行数', min_value=120, max_value=1000, value=400, step=20)
-
-    try:
-        sample_df = _load_sample_frame(source_path, sample_stocks, sample_rows)
-    except Exception as exc:
-        sample_df = None
-        st.warning(f'加载校验样本失败: {exc}')
-
-    if editor_mode == '编辑现有因子':
-        factor_name = st.selectbox('选择因子', table_df['name'].tolist(), key='factor_editor_existing')
-        spec = get_factor_spec(feature_set, store_path, factor_name)
-
-        edited_expression = st.text_area('表达式', value=spec.get('expression', ''), height=110)
-        edited_group = st.text_input('分组', value=spec.get('group', 'custom'))
-        edited_desc = st.text_input('描述', value=spec.get('description', ''))
-
-        col_val, col_save, col_reset, col_delete = st.columns(4)
-        if col_val.button('校验表达式'):
-            if sample_df is None:
-                st.error('缺少校验样本。')
-            else:
-                ok, msg, stat = _validate_expression(sample_df, edited_expression)
-                (st.success if ok else st.error)(msg)
-                if stat:
-                    st.json(stat)
-
-        if col_save.button('保存'):
+        if col_enable.button('批量启用', type='primary'):
             try:
-                if spec.get('source') == 'custom':
+                for name in selected_names:
+                    set_factor_enabled(store_path, feature_set, name, True)
+                st.success(f'已启用 {len(selected_names)} 个因子。')
+                st.rerun()
+            except Exception as exc:
+                st.error(f'启用失败: {exc}')
+
+        if col_disable.button('批量禁用'):
+            try:
+                for name in selected_names:
+                    set_factor_enabled(store_path, feature_set, name, False)
+                st.success(f'已禁用 {len(selected_names)} 个因子。')
+                st.rerun()
+            except Exception as exc:
+                st.error(f'禁用失败: {exc}')
+
+        st.markdown('<div class="terminal-divider"></div>', unsafe_allow_html=True)
+        render_section_header('因子编辑器', '编辑已有因子或创建新的自定义表达式。')
+        editor_mode = st.radio('编辑模式', ['编辑现有因子', '新建自定义因子'], horizontal=True)
+
+        source_path = st.text_input('表达式校验数据源', value=resolve_dataset_path(config, 'train.csv'), key='factor_validate_source')
+        sample_stocks = st.slider('校验样本股票数', min_value=5, max_value=80, value=30, step=1)
+        sample_rows = st.slider('每只股票样本行数', min_value=120, max_value=1000, value=400, step=20)
+
+        try:
+            sample_df = _load_sample_frame(source_path, sample_stocks, sample_rows)
+        except Exception as exc:
+            sample_df = None
+            st.warning(f'加载校验样本失败: {exc}')
+
+        if editor_mode == '编辑现有因子':
+            factor_name = st.selectbox('选择因子', table_df['name'].tolist(), key='factor_editor_existing')
+            spec = get_factor_spec(feature_set, store_path, factor_name)
+
+            edited_expression = st.text_area('表达式', value=spec.get('expression', ''), height=110)
+            edited_group = st.text_input('分组', value=spec.get('group', 'custom'))
+            edited_desc = st.text_input('描述', value=spec.get('description', ''))
+
+            col_val, col_save, col_reset, col_delete = st.columns(4)
+            if col_val.button('校验表达式'):
+                if sample_df is None:
+                    st.error('缺少校验样本。')
+                else:
+                    ok, msg, stat = _validate_expression(sample_df, edited_expression)
+                    (st.success if ok else st.error)(msg)
+                    if stat:
+                        st.json(stat)
+
+            if col_save.button('保存'):
+                try:
+                    if spec.get('source') == 'custom':
+                        upsert_custom_factor(
+                            store_path,
+                            feature_set,
+                            factor_name,
+                            edited_expression,
+                            group=edited_group,
+                            description=edited_desc,
+                            enabled=bool(spec.get('enabled', True)),
+                        )
+                    else:
+                        upsert_builtin_override(
+                            store_path,
+                            feature_set,
+                            factor_name,
+                            edited_expression,
+                            group=edited_group,
+                            description=edited_desc,
+                        )
+                    st.success('保存成功。')
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f'保存失败: {exc}')
+
+            if col_reset.button('重置内置覆盖'):
+                try:
+                    clear_builtin_override(store_path, feature_set, factor_name)
+                    st.success('已恢复内置默认公式。')
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f'重置失败: {exc}')
+
+            if col_delete.button('删除自定义因子'):
+                if spec.get('source') != 'custom':
+                    st.error('内置因子不能删除。')
+                else:
+                    try:
+                        delete_custom_factor(store_path, feature_set, factor_name)
+                        st.success('已删除。')
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f'删除失败: {exc}')
+        else:
+            new_name = st.text_input('新因子名称', value='my_custom_factor')
+            new_group = st.text_input('分组', value='custom')
+            new_desc = st.text_input('描述', value='')
+            new_expr = st.text_area('表达式', value='(开盘 / (shift(收盘, 1) + 1e-12)) - 1', height=110)
+            new_enabled = st.checkbox('创建后启用', value=True)
+
+            col_val_new, col_create = st.columns(2)
+            if col_val_new.button('校验表达式', key='btn_validate_new_factor'):
+                if sample_df is None:
+                    st.error('缺少校验样本。')
+                else:
+                    ok, msg, stat = _validate_expression(sample_df, new_expr)
+                    (st.success if ok else st.error)(msg)
+                    if stat:
+                        st.json(stat)
+
+            if col_create.button('创建因子'):
+                try:
                     upsert_custom_factor(
                         store_path,
                         feature_set,
-                        factor_name,
-                        edited_expression,
-                        group=edited_group,
-                        description=edited_desc,
-                        enabled=bool(spec.get('enabled', True)),
+                        new_name.strip(),
+                        new_expr,
+                        group=new_group.strip() or 'custom',
+                        description=new_desc,
+                        enabled=new_enabled,
                     )
-                else:
-                    upsert_builtin_override(
-                        store_path,
-                        feature_set,
-                        factor_name,
-                        edited_expression,
-                        group=edited_group,
-                        description=edited_desc,
-                    )
-                st.success('保存成功。')
-                st.rerun()
-            except Exception as exc:
-                st.error(f'保存失败: {exc}')
-
-        if col_reset.button('重置内置覆盖'):
-            try:
-                clear_builtin_override(store_path, feature_set, factor_name)
-                st.success('已恢复内置默认公式。')
-                st.rerun()
-            except Exception as exc:
-                st.error(f'重置失败: {exc}')
-
-        if col_delete.button('删除自定义因子'):
-            if spec.get('source') != 'custom':
-                st.error('内置因子不能删除。')
-            else:
-                try:
-                    delete_custom_factor(store_path, feature_set, factor_name)
-                    st.success('已删除。')
+                    st.success(f'已创建因子: {new_name}')
                     st.rerun()
                 except Exception as exc:
-                    st.error(f'删除失败: {exc}')
+                    st.error(f'创建失败: {exc}')
 
-    else:
-        new_name = st.text_input('新因子名称', value='my_custom_factor')
-        new_group = st.text_input('分组', value='custom')
-        new_desc = st.text_input('描述', value='')
-        new_expr = st.text_area('表达式', value='(开盘 / (shift(收盘, 1) + 1e-12)) - 1', height=110)
-        new_enabled = st.checkbox('创建后启用', value=True)
-
-        col_val_new, col_create = st.columns(2)
-        if col_val_new.button('校验表达式', key='btn_validate_new_factor'):
-            if sample_df is None:
-                st.error('缺少校验样本。')
-            else:
-                ok, msg, stat = _validate_expression(sample_df, new_expr)
-                (st.success if ok else st.error)(msg)
-                if stat:
-                    st.json(stat)
-
-        if col_create.button('创建因子'):
-            try:
-                upsert_custom_factor(
-                    store_path,
-                    feature_set,
-                    new_name.strip(),
-                    new_expr,
-                    group=new_group.strip() or 'custom',
-                    description=new_desc,
-                    enabled=new_enabled,
-                )
-                st.success(f'已创建因子: {new_name}')
-                st.rerun()
-            except Exception as exc:
-                st.error(f'创建失败: {exc}')
-
-    st.markdown('### 因子分布分析')
-    factor_for_dist = st.selectbox('选择分析因子', table_df['name'].tolist(), key='factor_dist_name')
-    norm_method = st.selectbox('标准化方式', ['zscore', 'rank'], key='factor_dist_norm')
-    dist_sample_stocks = st.slider('分布样本股票数', min_value=5, max_value=120, value=40, step=5)
-    dist_rows = st.slider('分布每股样本行数', min_value=120, max_value=1500, value=500, step=20)
-
-    if st.button('计算分布并绘图'):
-        try:
-            dist_df = _compute_factor_distribution(
-                source_path,
-                feature_set,
-                store_path,
-                factor_for_dist,
-                dist_sample_stocks,
-                dist_rows,
-                norm_method,
+    with right_col:
+        render_section_header('因子概览', '当前流水线内所有因子与来源信息。')
+        with st.expander('因子概览明细', expanded=True):
+            st.dataframe(
+                table_df[['name', 'enabled', 'source', 'group', 'overridden', 'description']],
+                width='stretch',
+                height=320,
             )
-            fig = _plot_distribution(dist_df, factor_for_dist, norm_method)
-            st.plotly_chart(fig, width='stretch')
-            st.caption(f'样本量: {len(dist_df):,}')
-        except Exception as exc:
-            st.error(f'分布分析失败: {exc}')
+
+        st.markdown('<div class="terminal-divider"></div>', unsafe_allow_html=True)
+        render_section_header('分布分析', '查看标准化前后的因子分布。')
+        factor_for_dist = st.selectbox('选择分析因子', table_df['name'].tolist(), key='factor_dist_name')
+        norm_method = st.selectbox('标准化方式', ['zscore', 'rank'], key='factor_dist_norm')
+        dist_sample_stocks = st.slider('分布样本股票数', min_value=5, max_value=120, value=40, step=5)
+        dist_rows = st.slider('分布每股样本行数', min_value=120, max_value=1500, value=500, step=20)
+
+        if st.button('计算分布并绘图'):
+            try:
+                dist_df = _compute_factor_distribution(
+                    source_path,
+                    feature_set,
+                    store_path,
+                    factor_for_dist,
+                    dist_sample_stocks,
+                    dist_rows,
+                    norm_method,
+                )
+                fig = _plot_distribution(dist_df, factor_for_dist, norm_method)
+                st.plotly_chart(fig, width='stretch')
+                st.caption(f'样本量: {len(dist_df):,}')
+            except Exception as exc:
+                st.error(f'分布分析失败: {exc}')

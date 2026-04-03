@@ -6,16 +6,19 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from gui_console.common import apply_dark_figure_style
 from gui_console.common import build_env
-from gui_console.common import format_cmd
 from gui_console.common import get_job
-from gui_console.common import job_status_text
 from gui_console.common import load_csv_cached
 from gui_console.common import load_effective_config
 from gui_console.common import project_path
 from gui_console.common import python_cmd
 from gui_console.common import read_json
-from gui_console.common import read_text_tail
+from gui_console.common import render_collapsible_job_panel
+from gui_console.common import render_job_panel
+from gui_console.common import render_metric_card
+from gui_console.common import render_page_hero
+from gui_console.common import render_section_header
 from gui_console.common import resolve_effective_path
 from gui_console.common import start_job
 from gui_console.common import stop_job
@@ -29,14 +32,13 @@ def _normalize_code(series: pd.Series) -> pd.Series:
     return s
 
 
-def _render_job(job_key: str, title: str) -> None:
-    job = get_job(job_key)
-    st.caption(f'{title} 状态: {job_status_text(job)}')
-    if not job:
-        return
-    st.code(format_cmd(job['cmd']), language='bash')
-    st.caption(f"日志: {job['log_path']}")
-    st.text_area(f'{title} 日志 (tail)', value=read_text_tail(job['log_path'], 150), height=180, key=f'{job_key}_log')
+def _safe_read_dataframe(path: Path) -> pd.DataFrame | None:
+    if not path.exists():
+        return None
+    try:
+        return load_csv_cached(str(path))
+    except Exception:
+        return None
 
 
 def _compute_stock_returns(test_df: pd.DataFrame) -> pd.DataFrame:
@@ -125,100 +127,107 @@ def _plot_strategy_board(df: pd.DataFrame) -> Optional[go.Figure]:
             textposition='outside',
         )
     )
-    fig.update_layout(
-        title='策略模拟收益看板',
-        template='plotly_white',
-        margin={'l': 20, 'r': 20, 't': 30, 'b': 20},
-        xaxis_title='Strategy',
-        yaxis_title='Weighted Return',
-        height=380,
-    )
+    fig = apply_dark_figure_style(fig, title='策略模拟收益看板', height=380)
+    fig.update_layout(xaxis_title='Strategy', yaxis_title='Weighted Return')
     return fig
 
 
 def render_backtest_prediction(config_override_path: Optional[str]) -> None:
-    st.subheader('策略回测与预测 (Backtest & Prediction)')
     effective_config = load_effective_config(config_override_path)
-
-    col_pred, col_stop, col_score = st.columns(3)
-
-    if col_pred.button('一键推理'):
-        cmd = python_cmd('code/src/predict.py')
-        try:
-            start_job('predict', cmd, cwd=project_path(), env=build_env(config_override_path), replace_existing=True)
-            st.success('预测任务已启动。')
-        except Exception as exc:
-            st.error(f'启动失败: {exc}')
-
-    if col_stop.button('停止推理'):
-        stop_job('predict')
-        st.warning('已发送停止信号。')
-
-    if col_score.button('运行 score_self.py'):
-        cmd = python_cmd('test/score_self.py')
-        try:
-            start_job('score_self', cmd, cwd=project_path(), env=build_env(config_override_path), replace_existing=True)
-            st.success('评分任务已启动。')
-        except Exception as exc:
-            st.error(f'启动失败: {exc}')
-
-    _render_job('predict', '推理任务')
-    _render_job('score_self', '评分任务')
-
-    st.markdown('### 推理结果')
-    result_path = Path(project_path('output', 'result.csv'))
-    if result_path.exists():
-        result_df = load_csv_cached(str(result_path))
-        st.dataframe(result_df, width='stretch')
-    else:
-        st.info('尚未生成 output/result.csv。')
-
-    st.markdown('### 得分看板')
-    tmp_score_path = Path(project_path('temp', 'tmp.csv'))
-    if tmp_score_path.exists():
-        score_df = load_csv_cached(str(tmp_score_path))
-        st.dataframe(score_df, width='stretch')
-        if 'Final Score' in score_df.columns and not score_df.empty:
-            st.metric('参考总分', f"{float(score_df.iloc[-1]['Final Score']):.6f}")
-    else:
-        st.info('尚未检测到 temp/tmp.csv。')
-
-    st.markdown('### 策略模拟')
-    scores_path = Path(resolve_effective_path(str(effective_config.get('prediction_scores_path', './output/prediction_scores.csv'))))
-    test_path = Path(resolve_effective_path(str(effective_config.get('data_path', './data')))) / 'test.csv'
-    temperature = st.number_input(
-        'Softmax 温度',
-        min_value=0.1,
-        max_value=10.0,
-        value=float(effective_config.get('softmax_temperature', 1.0)),
-        step=0.1,
+    render_page_hero(
+        'Prediction Desk',
+        '推理执行、结果持仓、评分看板与策略模拟统一工作台。',
+        eyebrow='Portfolio Output',
     )
 
-    if not scores_path.exists():
-        st.warning('缺少 output/prediction_scores.csv，请先执行新版推理。')
-        return
-    if not test_path.exists():
-        st.warning(f'缺少测试集文件: {test_path}')
-        return
+    result_path = Path(project_path('output', 'result.csv'))
+    tmp_score_path = Path(project_path('temp', 'tmp.csv'))
+    score_df = _safe_read_dataframe(tmp_score_path)
+    result_df = _safe_read_dataframe(result_path)
 
-    try:
-        scores_df = load_csv_cached(str(scores_path))
-        test_df = load_csv_cached(str(test_path))
-        returns_df = _compute_stock_returns(test_df)
-        sim_df = _simulate_strategies(scores_df, returns_df, temperature=temperature)
+    summary_cols = st.columns(4)
+    with summary_cols[0]:
+        render_metric_card('Predict Status', job_status_text(get_job('predict')), '推理任务')
+    with summary_cols[1]:
+        render_metric_card('Score Status', job_status_text(get_job('score_self')), '评分任务')
+    with summary_cols[2]:
+        final_score = '—'
+        if score_df is not None and 'Final Score' in score_df.columns and not score_df.empty:
+            final_score = f"{float(score_df.iloc[-1]['Final Score']):.6f}"
+        render_metric_card('Final Score', final_score, 'temp/tmp.csv')
+    with summary_cols[3]:
+        render_metric_card('Holdings', str(len(result_df)) if result_df is not None else '—', 'output/result.csv')
 
-        if sim_df.empty:
-            st.info('策略模拟结果为空。')
+    control_col, result_col = st.columns([0.95, 1.25])
+    with control_col:
+        render_section_header('推理控制台', '启动推理、停止任务或运行评分脚本。')
+        action_cols = st.columns(3)
+        if action_cols[0].button('一键推理', type='primary'):
+            cmd = python_cmd('code/src/predict.py')
+            try:
+                start_job('predict', cmd, cwd=project_path(), env=build_env(config_override_path), replace_existing=True)
+                st.success('预测任务已启动。')
+            except Exception as exc:
+                st.error(f'启动失败: {exc}')
+
+        if action_cols[1].button('停止推理'):
+            stop_job('predict')
+            st.warning('已发送停止信号。')
+
+        if action_cols[2].button('运行 score_self.py'):
+            cmd = python_cmd('test/score_self.py')
+            try:
+                start_job('score_self', cmd, cwd=project_path(), env=build_env(config_override_path), replace_existing=True)
+                st.success('评分任务已启动。')
+            except Exception as exc:
+                st.error(f'启动失败: {exc}')
+
+        render_job_panel('predict', '推理任务', log_lines=150)
+        render_collapsible_job_panel('score_self', '评分任务日志', log_lines=150, expanded=False)
+
+    with result_col:
+        render_section_header('结果持仓', '当前 result.csv 输出与持仓规模。')
+        if result_df is not None:
+            st.dataframe(result_df, width='stretch')
         else:
-            fig = _plot_strategy_board(sim_df)
-            if fig is not None:
-                st.plotly_chart(fig, width='stretch')
-            st.dataframe(sim_df, width='stretch')
+            st.info('尚未生成 output/result.csv。')
 
-        best_strategy_path = Path(resolve_effective_path(str(effective_config.get('output_dir', './model')))) / 'best_strategy.json'
-        best_strategy = read_json(str(best_strategy_path))
-        if best_strategy:
-            st.caption('当前训练保存的最佳策略配置')
-            st.json(best_strategy)
-    except Exception as exc:
-        st.error(f'策略模拟失败: {exc}')
+        render_section_header('得分看板', 'score_self 输出的参考分数。')
+        if score_df is not None:
+            st.dataframe(score_df, width='stretch')
+        else:
+            st.info('尚未检测到 temp/tmp.csv。')
+
+        render_section_header('策略模拟', '根据 prediction_scores.csv 回放不同 top-k 策略。')
+        scores_path = Path(resolve_effective_path(str(effective_config.get('prediction_scores_path', './output/prediction_scores.csv'))))
+        test_path = Path(resolve_effective_path(str(effective_config.get('data_path', './data')))) / 'test.csv'
+        temperature = st.number_input('Softmax 温度', min_value=0.1, max_value=10.0, value=float(effective_config.get('softmax_temperature', 1.0)), step=0.1)
+
+        if not scores_path.exists():
+            st.warning('缺少 output/prediction_scores.csv，请先执行新版推理。')
+            return
+        if not test_path.exists():
+            st.warning(f'缺少测试集文件: {test_path}')
+            return
+
+        try:
+            scores_df = load_csv_cached(str(scores_path))
+            test_df = load_csv_cached(str(test_path))
+            returns_df = _compute_stock_returns(test_df)
+            sim_df = _simulate_strategies(scores_df, returns_df, temperature=temperature)
+
+            if sim_df.empty:
+                st.info('策略模拟结果为空。')
+            else:
+                fig = _plot_strategy_board(sim_df)
+                if fig is not None:
+                    st.plotly_chart(fig, width='stretch')
+                st.dataframe(sim_df, width='stretch')
+
+            best_strategy_path = Path(resolve_effective_path(str(effective_config.get('output_dir', './model')))) / 'best_strategy.json'
+            best_strategy = read_json(str(best_strategy_path))
+            if best_strategy:
+                st.caption('当前训练保存的最佳策略配置')
+                st.json(best_strategy)
+        except Exception as exc:
+            st.error(f'策略模拟失败: {exc}')

@@ -8,6 +8,9 @@ import streamlit as st
 from config import config
 from gui_console.common import project_path
 from gui_console.common import read_json
+from gui_console.common import render_metric_card
+from gui_console.common import render_page_hero
+from gui_console.common import render_section_header
 from gui_console.common import write_json
 
 DEFAULT_OVERRIDE_PATH = project_path('config', 'gui_config_override.json')
@@ -234,7 +237,11 @@ def _prefill_widgets(base_cfg: Dict) -> None:
 
 
 def render_hyperparams() -> Optional[str]:
-    st.subheader('模型配置与参数微调 (Hyperparameter Tuning)')
+    render_page_hero(
+        'Hyperparams',
+        '训练配置覆盖、实验参数与输出路径统一配置面板。',
+        eyebrow='Experiment Configuration',
+    )
 
     override_path = st.text_input('覆盖配置文件路径', value=st.session_state.get('gui_override_path', DEFAULT_OVERRIDE_PATH))
     st.session_state['gui_override_path'] = override_path
@@ -243,48 +250,92 @@ def render_hyperparams() -> Optional[str]:
     merged = dict(config)
     merged.update(existing_override)
 
-    col_load, col_clear = st.columns(2)
-    if col_load.button('从覆盖文件回填控件'):
+    summary_cols = st.columns(4)
+    with summary_cols[0]:
+        render_metric_card('Feature Set', str(merged.get('feature_num', config.get('feature_num', '158+39'))), '当前特征集合')
+    with summary_cols[1]:
+        render_metric_card('Sequence Length', str(merged.get('sequence_length', config.get('sequence_length', 60))), '时间窗口长度')
+    with summary_cols[2]:
+        render_metric_card('Epochs', str(merged.get('num_epochs', config.get('num_epochs', 50))), '训练轮数')
+    with summary_cols[3]:
+        render_metric_card('Output Dir', str(merged.get('output_dir', config.get('output_dir', './model'))), '当前输出目录')
+
+    top_actions = st.columns(2)
+    if top_actions[0].button('从覆盖文件回填控件', type='primary'):
         _prefill_widgets(merged)
         st.success('已从覆盖文件回填。')
         st.rerun()
 
-    if col_clear.button('清空覆盖配置'):
+    if top_actions[1].button('清空覆盖配置'):
         target = Path(override_path)
         if target.exists():
             target.unlink()
         st.success('覆盖配置已清空。')
         st.rerun()
 
-    st.markdown('### 可交互参数')
+    render_section_header('实验配置总览', '按模块组织参数，避免长表单造成的视觉负担。')
+    values = _collect_widget_values()
 
-    with st.container(border=True):
-        st.markdown('#### 架构参数')
-        st.caption('Transformer 层数、头数、序列长度等。')
-        values = _collect_widget_values()
+    enabled_count = sum(
+        int(values[key])
+        for key in [
+            'use_market_gating',
+            'use_market_gating_macro_context',
+            'use_multi_scale_temporal',
+            'use_temporal_cross_stock_attention',
+            'use_industry_virtual_stock',
+            'use_multitask_volatility',
+        ]
+    )
 
-    with st.container(border=True):
-        st.markdown('#### 优化版专项开关')
-        st.caption('6 项增强能力 + 截面标准化 + 混合损失权重。')
-        enabled_count = sum(
-            int(values[key])
-            for key in [
-                'use_market_gating',
-                'use_market_gating_macro_context',
-                'use_multi_scale_temporal',
-                'use_temporal_cross_stock_attention',
-                'use_industry_virtual_stock',
-                'use_multitask_volatility',
-            ]
-        )
-        st.metric('已开启增强项', f'{enabled_count}/6')
+    enhance_cols = st.columns(2)
+    with enhance_cols[0]:
+        render_metric_card('Enhancements Enabled', f'{enabled_count}/6', '优化版专项开关')
+    with enhance_cols[1]:
+        render_metric_card('Override Keys', str(len(existing_override)), '当前覆盖字段数')
 
+    render_section_header('模型参数', 'Transformer 结构、序列长度与模型宽度。')
+    model_cols = st.columns(3)
+    model_cols[0].number_input('序列长度', min_value=10, max_value=240, value=int(values['sequence_length']), step=1, key='hp_sequence_length')
+    model_cols[1].number_input('d_model', min_value=32, max_value=1024, value=int(values['d_model']), step=16, key='hp_d_model')
+    model_cols[2].number_input('nhead', min_value=1, max_value=16, value=int(values['nhead']), step=1, key='hp_nhead')
+    model_cols_2 = st.columns(2)
+    model_cols_2[0].number_input('num_layers', min_value=1, max_value=12, value=int(values['num_layers']), step=1, key='hp_num_layers')
+    model_cols_2[1].number_input('dim_feedforward', min_value=64, max_value=4096, value=int(values['dim_feedforward']), step=64, key='hp_dim_feedforward')
+
+    render_section_header('训练参数', '优化器、批次、学习率与损失权重。')
+    train_cols = st.columns(3)
+    train_cols[0].number_input('learning_rate', min_value=1e-7, max_value=1e-2, value=float(values['learning_rate']), format='%.7f', key='hp_lr')
+    train_cols[1].number_input('batch_size', min_value=1, max_value=128, value=int(values['batch_size']), step=1, key='hp_batch_size')
+    train_cols[2].number_input('num_epochs', min_value=1, max_value=400, value=int(values['num_epochs']), step=1, key='hp_num_epochs')
+    train_cols_2 = st.columns(4)
+    train_cols_2[0].number_input('weight_decay', min_value=0.0, max_value=1.0, value=float(values['weight_decay']), format='%.7f', key='hp_weight_decay')
+    train_cols_2[1].number_input('ListNet 权重', min_value=0.0, max_value=10.0, value=float(values['listnet_weight']), step=0.1, key='hp_listnet')
+    train_cols_2[2].number_input('Pairwise 权重', min_value=0.0, max_value=10.0, value=float(values['pairwise_weight']), step=0.1, key='hp_pairwise')
+    train_cols_2[3].number_input('LambdaNDCG 权重', min_value=0.0, max_value=10.0, value=float(values['lambda_ndcg_weight']), step=0.1, key='hp_lambdandcg')
+
+    render_section_header('功能开关', '增强项、标准化方式与路径设置。')
+    feature_cols = st.columns(3)
+    feature_cols[0].selectbox('特征集合', ['39', '158+39'], index=1 if str(values['feature_num']) == '158+39' else 0, key='hp_feature_num')
+    feature_cols[1].selectbox('截面标准化方法', ['zscore', 'rank'], index=0 if str(values['feature_cs_norm_method']) == 'zscore' else 1, key='hp_feature_cs_method')
+    feature_cols[2].text_input('输出目录', value=str(values['output_dir']), key='hp_output_dir')
+    st.text_input('数据目录', value=str(values['data_path']), key='hp_data_path')
+
+    toggle_cols = st.columns(3)
+    toggle_cols[0].checkbox('市场状态引导门控 (Market Gating)', value=bool(values['use_market_gating']), key='hp_use_market_gating')
+    toggle_cols[1].checkbox('宏观情绪 Gate 输入', value=bool(values['use_market_gating_macro_context']), key='hp_use_market_gating_macro')
+    toggle_cols[2].checkbox('多尺度时序编码', value=bool(values['use_multi_scale_temporal']), key='hp_use_multi_scale')
+    toggle_cols_2 = st.columns(3)
+    toggle_cols_2[0].checkbox('时间步级跨股交互', value=bool(values['use_temporal_cross_stock_attention']), key='hp_use_temporal_cross_stock')
+    toggle_cols_2[1].checkbox('行业虚拟股交互', value=bool(values['use_industry_virtual_stock']), key='hp_use_industry_virtual')
+    toggle_cols_2[2].checkbox('多任务波动率辅助头', value=bool(values['use_multitask_volatility']), key='hp_use_multitask_vol')
+
+    render_section_header('覆盖配置管理', '保存当前差异配置，并查看 JSON 预览。')
     auto_output = st.checkbox('根据 sequence_length/feature_num 自动重建 output_dir', value=True)
-
     col_save, col_preview = st.columns(2)
 
     if col_save.button('保存覆盖配置'):
-        payload = dict(values)
+        payload = _collect_widget_values()
         if auto_output:
             payload['output_dir'] = f"./model/{payload['sequence_length']}_{payload['feature_num']}"
 
@@ -301,8 +352,8 @@ def render_hyperparams() -> Optional[str]:
     if col_preview.button('刷新预览'):
         st.rerun()
 
-    st.markdown('### 覆盖配置预览 (JSON)')
     latest = read_json(override_path) or {}
-    st.code(json.dumps(latest, ensure_ascii=False, indent=2), language='json')
+    with st.expander('覆盖配置预览 (JSON)', expanded=False):
+        st.code(json.dumps(latest, ensure_ascii=False, indent=2), language='json')
 
     return override_path

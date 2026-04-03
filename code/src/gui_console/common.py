@@ -6,6 +6,7 @@ import signal
 import subprocess
 import sys
 import time
+from html import escape
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -17,6 +18,285 @@ from config import config as BASE_CONFIG
 ROOT_DIR = Path(__file__).resolve().parents[3]
 TEMP_DIR = ROOT_DIR / 'temp'
 GUI_LOG_DIR = TEMP_DIR / 'gui_logs'
+
+TERMINAL_TONES = {
+    'running': 'running',
+    'success': 'success',
+    'failed': 'failed',
+    'idle': 'idle',
+    'warning': 'warning',
+}
+
+
+def inject_terminal_theme() -> None:
+    st.markdown(
+        """
+        <style>
+        :root {
+            --terminal-bg: #071018;
+            --terminal-panel: rgba(13, 22, 32, 0.88);
+            --terminal-panel-alt: rgba(9, 16, 24, 0.92);
+            --terminal-border: rgba(76, 201, 240, 0.18);
+            --terminal-border-strong: rgba(76, 201, 240, 0.32);
+            --terminal-text: #e6edf3;
+            --terminal-muted: #7d93a8;
+            --terminal-accent: #4cc9f0;
+            --terminal-accent-2: #90e0ef;
+            --terminal-success: #39d98a;
+            --terminal-warning: #ffb020;
+            --terminal-danger: #ff6b6b;
+        }
+
+        .stApp {
+            background:
+                radial-gradient(circle at top right, rgba(76, 201, 240, 0.10), transparent 24%),
+                radial-gradient(circle at top left, rgba(144, 224, 239, 0.08), transparent 20%),
+                linear-gradient(180deg, #071018 0%, #09131c 100%);
+            color: var(--terminal-text);
+        }
+
+        .stApp [data-testid="stSidebar"] {
+            background: linear-gradient(180deg, rgba(6, 13, 19, 0.98), rgba(9, 16, 24, 0.98));
+            border-right: 1px solid rgba(76, 201, 240, 0.12);
+        }
+
+        .terminal-shell {
+            padding-bottom: 1.2rem;
+        }
+
+        .terminal-hero {
+            background: linear-gradient(135deg, rgba(13, 22, 32, 0.95), rgba(9, 16, 24, 0.92));
+            border: 1px solid var(--terminal-border-strong);
+            border-radius: 20px;
+            padding: 1.2rem 1.35rem;
+            margin-bottom: 1rem;
+            box-shadow: 0 16px 36px rgba(0, 0, 0, 0.24);
+        }
+
+        .terminal-eyebrow {
+            color: var(--terminal-accent);
+            text-transform: uppercase;
+            letter-spacing: 0.16em;
+            font-size: 0.72rem;
+            font-weight: 700;
+            margin-bottom: 0.35rem;
+        }
+
+        .terminal-title {
+            color: var(--terminal-text);
+            font-size: 2rem;
+            font-weight: 800;
+            line-height: 1.08;
+            margin: 0;
+        }
+
+        .terminal-subtitle {
+            color: var(--terminal-muted);
+            font-size: 0.95rem;
+            margin-top: 0.45rem;
+            margin-bottom: 0;
+        }
+
+        .terminal-panel {
+            background: linear-gradient(180deg, var(--terminal-panel), var(--terminal-panel-alt));
+            border: 1px solid var(--terminal-border);
+            border-radius: 18px;
+            padding: 1rem 1.1rem;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02), 0 12px 28px rgba(0, 0, 0, 0.18);
+            margin-bottom: 0.9rem;
+        }
+
+        .terminal-panel.tight {
+            padding: 0.8rem 0.95rem;
+        }
+
+        .terminal-kpi-label {
+            color: var(--terminal-muted);
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            font-weight: 700;
+            margin-bottom: 0.45rem;
+        }
+
+        .terminal-kpi-value {
+            color: var(--terminal-text);
+            font-size: 1.55rem;
+            font-weight: 800;
+            line-height: 1.15;
+        }
+
+        .terminal-kpi-hint {
+            color: var(--terminal-muted);
+            font-size: 0.82rem;
+            margin-top: 0.45rem;
+        }
+
+        .terminal-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            padding: 0.22rem 0.62rem;
+            border-radius: 999px;
+            font-size: 0.72rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            border: 1px solid transparent;
+        }
+
+        .terminal-badge-running {
+            color: var(--terminal-accent);
+            background: rgba(76, 201, 240, 0.12);
+            border-color: rgba(76, 201, 240, 0.22);
+        }
+
+        .terminal-badge-success {
+            color: var(--terminal-success);
+            background: rgba(57, 217, 138, 0.12);
+            border-color: rgba(57, 217, 138, 0.22);
+        }
+
+        .terminal-badge-failed {
+            color: var(--terminal-danger);
+            background: rgba(255, 107, 107, 0.12);
+            border-color: rgba(255, 107, 107, 0.22);
+        }
+
+        .terminal-badge-idle, .terminal-badge-warning {
+            color: var(--terminal-warning);
+            background: rgba(255, 176, 32, 0.12);
+            border-color: rgba(255, 176, 32, 0.22);
+        }
+
+        .terminal-section-title {
+            color: var(--terminal-text);
+            font-size: 1rem;
+            font-weight: 700;
+            margin-bottom: 0.8rem;
+        }
+
+        .terminal-help {
+            color: var(--terminal-muted);
+            font-size: 0.84rem;
+            margin-top: 0.2rem;
+        }
+
+        .terminal-divider {
+            height: 1px;
+            background: linear-gradient(90deg, rgba(76, 201, 240, 0.22), rgba(76, 201, 240, 0));
+            margin: 0.9rem 0 1rem 0;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _tone_for_status_text(status_text: str) -> str:
+    if '运行' in status_text:
+        return TERMINAL_TONES['running']
+    if '完成' in status_text:
+        return TERMINAL_TONES['success']
+    if '失败' in status_text:
+        return TERMINAL_TONES['failed']
+    return TERMINAL_TONES['idle']
+
+
+def render_page_hero(title: str, subtitle: str = '', eyebrow: str = 'Quant Research Terminal') -> None:
+    title_html = escape(str(title))
+    subtitle_html = f'<p class="terminal-subtitle">{escape(str(subtitle))}</p>' if subtitle else ''
+    st.markdown(
+        f'''<div class="terminal-hero"><div class="terminal-eyebrow">{escape(str(eyebrow))}</div><h1 class="terminal-title">{title_html}</h1>{subtitle_html}</div>''',
+        unsafe_allow_html=True,
+    )
+
+
+def render_metric_card(label: str, value: str, hint: str = '') -> None:
+    hint_html = f'<div class="terminal-kpi-hint">{escape(str(hint))}</div>' if hint else ''
+    st.markdown(
+        f'''<div class="terminal-panel tight"><div class="terminal-kpi-label">{escape(str(label))}</div><div class="terminal-kpi-value">{escape(str(value))}</div>{hint_html}</div>''',
+        unsafe_allow_html=True,
+    )
+
+
+def render_status_badge(text: str, tone: str) -> None:
+    tone_key = TERMINAL_TONES.get(tone, TERMINAL_TONES['idle'])
+    st.markdown(
+        f'<span class="terminal-badge terminal-badge-{tone_key}">{escape(str(text))}</span>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_section_header(title: str, description: str = '') -> None:
+    st.markdown(f'<div class="terminal-section-title">{escape(str(title))}</div>', unsafe_allow_html=True)
+    if description:
+        st.caption(description)
+
+
+def render_job_panel(job_key: str, title: str, log_lines: int = 120) -> None:
+    job = get_job(job_key)
+    status_text = job_status_text(job)
+    tone = _tone_for_status_text(status_text)
+    render_section_header(title)
+    render_status_badge(status_text, tone)
+    if not job:
+        st.caption('当前没有运行记录。')
+        return
+    st.code(format_cmd(job['cmd']), language='bash')
+    st.caption(f"日志: {job['log_path']}")
+    st.text_area(
+        f'{title} 日志',
+        value=read_text_tail(job['log_path'], log_lines),
+        height=180,
+        key=f'{job_key}_panel_log',
+    )
+
+
+def render_collapsible_job_panel(job_key: str, title: str, *, log_lines: int = 120, expanded: bool = False) -> None:
+    job = get_job(job_key)
+    status_text = job_status_text(job)
+    tone = _tone_for_status_text(status_text)
+    with st.expander(f'{title} · {status_text}', expanded=expanded):
+        render_status_badge(status_text, tone)
+        if not job:
+            st.caption('当前没有运行记录。')
+            return
+        st.code(format_cmd(job['cmd']), language='bash')
+        st.caption(f"日志: {job['log_path']}")
+        st.text_area(
+            f'{title} 日志',
+            value=read_text_tail(job['log_path'], log_lines),
+            height=180,
+            key=f'{job_key}_collapsible_log',
+        )
+
+
+def apply_dark_figure_style(fig, *, height=None, title=None):
+    if title is not None:
+        fig.update_layout(title=title)
+    fig.update_layout(
+        template='plotly_dark',
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        font={'color': '#e6edf3'},
+        margin={'l': 20, 'r': 20, 't': 36, 'b': 20},
+        legend={'orientation': 'h', 'yanchor': 'bottom', 'y': 1.02, 'xanchor': 'right', 'x': 1.0},
+    )
+    fig.update_xaxes(showgrid=True, gridcolor='rgba(125,147,168,0.12)', zeroline=False)
+    fig.update_yaxes(showgrid=True, gridcolor='rgba(125,147,168,0.12)', zeroline=False)
+    if height is not None:
+        fig.update_layout(height=height)
+    return fig
+
+
+def summarize_jobs(job_keys: List[str]) -> Dict[str, int]:
+    summary = {'running': 0, 'success': 0, 'failed': 0, 'idle': 0}
+    for job_key in job_keys:
+        status_text = job_status_text(get_job(job_key))
+        tone = _tone_for_status_text(status_text)
+        summary[tone] = summary.get(tone, 0) + 1
+    return summary
 
 
 def ensure_gui_dirs() -> None:
