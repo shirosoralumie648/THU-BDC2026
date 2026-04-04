@@ -22,6 +22,14 @@ class ValidationReport:
         }
 
 
+ALLOWED_FACTOR_ENGINES = {
+    'expression',
+    'meta_expression',
+    'intraday_aggregate',
+    'macro_asof_join',
+}
+
+
 def _project_root() -> Path:
     # code/src/pipeline_config.py -> project root
     return Path(__file__).resolve().parents[2]
@@ -89,10 +97,18 @@ def validate_datasets_config(payload: Dict[str, Any]) -> ValidationReport:
         errors.extend(
             _require_keys(spec, ['source', 'schema', 'storage'], f'datasets.yaml dataset `{name}`')
         )
+        source = spec.get('source', {})
+        if 'source' in spec and not isinstance(source, dict):
+            errors.append(f'datasets.yaml dataset `{name}` 的 source 必须为对象')
         schema = spec.get('schema', {})
         if isinstance(schema, dict):
             if 'columns' not in schema:
                 errors.append(f'datasets.yaml dataset `{name}` 的 schema 缺少 columns')
+            elif not isinstance(schema.get('columns'), dict):
+                errors.append(f'datasets.yaml dataset `{name}` 的 schema.columns 必须为对象')
+            primary_key = schema.get('primary_key', [])
+            if primary_key is not None and not isinstance(primary_key, list):
+                errors.append(f'datasets.yaml dataset `{name}` 的 schema.primary_key 必须为数组')
         else:
             errors.append(f'datasets.yaml dataset `{name}` 的 schema 必须为对象')
 
@@ -142,10 +158,18 @@ def validate_factors_config(payload: Dict[str, Any]) -> ValidationReport:
         if not isinstance(compute, dict):
             errors.append(f'factors.yaml 节点 `{node_id}` 的 compute 必须为对象')
             continue
-        if 'engine' not in compute:
+        engine = str(compute.get('engine', '')).strip()
+        if not engine:
             errors.append(f'factors.yaml 节点 `{node_id}` 缺少 compute.engine')
-        if ('expression' not in compute) and (compute.get('engine') in {'expression', 'meta_expression'}):
+        elif engine not in ALLOWED_FACTOR_ENGINES:
+            errors.append(f'factors.yaml 节点 `{node_id}` 使用了不支持的 compute.engine: {engine}')
+        if ('expression' not in compute) and (engine in {'expression', 'meta_expression', 'intraday_aggregate'}):
             errors.append(f'factors.yaml 节点 `{node_id}` 缺少 compute.expression')
+        output = node.get('output', {})
+        if not isinstance(output, dict):
+            errors.append(f'factors.yaml 节点 `{node_id}` 的 output 必须为对象')
+        elif not str(output.get('column', '')).strip():
+            errors.append(f'factors.yaml 节点 `{node_id}` 缺少 output.column')
 
     for node in nodes:
         if not isinstance(node, dict):

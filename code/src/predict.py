@@ -1,6 +1,7 @@
 import os
 import multiprocessing as mp
 import json
+from functools import partial
 
 import joblib
 import numpy as np
@@ -9,11 +10,11 @@ import torch
 from tqdm import tqdm
 
 from config import config
-from factor_store import apply_factor_expressions
-from factor_store import engineer_group_features
 from factor_store import load_factor_snapshot
 from factor_store import resolve_factor_pipeline
-from model import StockTransformer
+from features.feature_assembler import augment_feature_table
+from features.feature_assembler import build_feature_table
+from models.rank_model import StockTransformer
 from portfolio.policy import scores_to_portfolio
 from data_manager import build_stock_industry_index as build_stock_industry_index_from_manager
 from data_manager import collect_data_sources
@@ -23,19 +24,11 @@ from data_manager import load_train_dataset_from_build_manifest
 from data_manager import log_dataset_manifest_info
 from data_manager import load_stock_to_industry_map
 from data_manager import save_data_manifest
-from utils import apply_cross_sectional_normalization
-from utils import augment_engineered_features
 from utils import resolve_feature_indices
 
 
 def preprocess_predict_data(df, stockid2idx, feature_pipeline):
-	feature_columns = feature_pipeline['active_features']
-	time_series_specs = feature_pipeline.get('time_series_specs')
-	if time_series_specs is None:
-		legacy_specs = [spec for spec in feature_pipeline.get('builtin_override_specs', []) if spec.get('overridden')]
-		legacy_specs.extend(feature_pipeline.get('custom_specs', []))
-		time_series_specs = legacy_specs
-	cross_sectional_specs = feature_pipeline.get('cross_sectional_specs', [])
+	feature_columns = list(feature_pipeline['active_features'])
 
 	df = df.copy()
 	df = df.sort_values(['股票代码', '日期']).reset_index(drop=True)
@@ -44,46 +37,42 @@ def preprocess_predict_data(df, stockid2idx, feature_pipeline):
 		raise ValueError('输入数据为空，无法预测')
 
 	num_processes = min(int(config.get('feature_engineer_processes', 4)), mp.cpu_count())
+	feature_builder = partial(
+		build_feature_table,
+		feature_set=feature_pipeline['feature_set'],
+		runtime_config=config,
+		feature_pipeline=feature_pipeline,
+	)
 	with mp.Pool(processes=num_processes) as pool:
-		tasks = [
-			(group, feature_pipeline['feature_set'], time_series_specs)
-			for group in groups
-		]
-		processed_list = list(tqdm(pool.imap(engineer_group_features, tasks), total=len(groups), desc='预测集特征工程'))
+		processed_list = list(tqdm(pool.imap(feature_builder, groups), total=len(groups), desc='预测集特征工程'))
 
 	processed = pd.concat(processed_list).reset_index(drop=True)
-	if cross_sectional_specs:
-		processed = processed.sort_values(['日期', '股票代码']).reset_index(drop=True)
-		processed = apply_factor_expressions(
-			processed,
-			cross_sectional_specs,
-			error_prefix='截面因子',
-			date_col='日期',
-		)
+	processed, feature_columns = augment_feature_table(
+		processed,
+		feature_columns,
+		runtime_config=config,
+		feature_pipeline=feature_pipeline,
+		date_col='日期',
+		stock_col='股票代码',
+		apply_feature_enhancements=False,
+		apply_cross_sectional_norm=False,
+	)
 	processed['instrument'] = processed['股票代码'].map(stockid2idx)
 	processed = processed.dropna(subset=['instrument']).copy()
 	processed['instrument'] = processed['instrument'].astype(np.int64)
 	processed['日期'] = pd.to_datetime(processed['日期'])
 
-	if bool(config.get('use_feature_enhancements', True)):
-		processed, feature_columns = augment_engineered_features(
-			processed,
-			feature_columns,
-			config=config,
-			date_col='日期',
-			stock_col='股票代码',
-		)
-
-	if config.get('use_cross_sectional_feature_norm', True):
-		cs_exclude = [col for col in feature_columns if col.startswith('market_')]
-		processed = apply_cross_sectional_normalization(
-			processed,
-			feature_columns,
-			date_col='日期',
-			method=config.get('feature_cs_norm_method', 'zscore'),
-			clip_value=config.get('feature_cs_clip_value', None),
-			exclude_columns=cs_exclude,
-		)
+	processed, feature_columns = augment_feature_table(
+		processed,
+		feature_columns,
+		runtime_config=config,
+		feature_pipeline=None,
+		date_col='日期',
+		stock_col='股票代码',
+		apply_factor_pipeline=False,
+		apply_feature_enhancements=True,
+		apply_cross_sectional_norm=True,
+	)
 
 	return processed, feature_columns
 

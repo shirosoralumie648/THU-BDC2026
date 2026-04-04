@@ -17,6 +17,18 @@ DEFAULT_RUNTIME_ROOT = str((PROJECT_ROOT / 'temp' / 'ingestion_runtime').resolve
 DEFAULT_CONFIG_DIR = str((PROJECT_ROOT / 'config').resolve())
 
 
+def _exception_message(exc: Exception) -> str:
+    if exc.args:
+        first = exc.args[0]
+        if isinstance(first, str) and first:
+            return first
+    return str(exc)
+
+
+def _error_detail(code: str, message: str) -> dict[str, str]:
+    return {'code': code, 'message': message}
+
+
 def create_app(*, service: IngestionService | None = None, runtime_root: str | None = None, config_dir: str | None = None) -> FastAPI:
     app = FastAPI(title='THU BDC Ingestion API', version='0.1.0')
     resolved_runtime_root = runtime_root or os.environ.get('THU_BDC_INGESTION_RUNTIME_ROOT', DEFAULT_RUNTIME_ROOT)
@@ -42,7 +54,10 @@ def create_app(*, service: IngestionService | None = None, runtime_root: str | N
             request = IngestionRequest(**payload)
             job = ingestion_service.create_job(request)
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=400,
+                detail=_error_detail('invalid_request', _exception_message(exc)),
+            ) from exc
         return ingestion_service.job_to_payload(job)
 
     @app.get('/ingestion/jobs/{job_id}')
@@ -50,7 +65,10 @@ def create_app(*, service: IngestionService | None = None, runtime_root: str | N
         try:
             job = ingestion_service.get_job(job_id)
         except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=404,
+                detail=_error_detail('job_not_found', f'job not found: {job_id}'),
+            ) from exc
         return ingestion_service.job_to_payload(job)
 
     @app.post('/ingestion/jobs/{job_id}/run')
@@ -58,22 +76,37 @@ def create_app(*, service: IngestionService | None = None, runtime_root: str | N
         try:
             job = ingestion_service.run_job(job_id)
         except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=404,
+                detail=_error_detail('job_not_found', f'job not found: {job_id}'),
+            ) from exc
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=400,
+                detail=_error_detail('job_run_failed', _exception_message(exc)),
+            ) from exc
         return ingestion_service.job_to_payload(job)
 
     @app.post('/ingestion/replay')
     def replay_job(payload: dict):
         job_id = str(payload.get('job_id', '')).strip()
         if not job_id:
-            raise HTTPException(status_code=400, detail='job_id is required')
+            raise HTTPException(
+                status_code=400,
+                detail=_error_detail('invalid_request', 'job_id is required'),
+            )
         try:
             job = ingestion_service.replay_job(job_id)
         except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=404,
+                detail=_error_detail('job_not_found', f'job not found: {job_id}'),
+            ) from exc
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=400,
+                detail=_error_detail('replay_failed', _exception_message(exc)),
+            ) from exc
         return ingestion_service.job_to_payload(job)
 
     return app

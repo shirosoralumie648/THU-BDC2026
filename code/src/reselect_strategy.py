@@ -13,12 +13,12 @@ from data_manager import load_train_dataset_from_build_manifest
 from data_manager import log_dataset_manifest_info
 from factor_store import load_factor_snapshot
 from factor_store import resolve_factor_pipeline
-from model import StockTransformer
 from experiments.metrics import build_strategy_candidates as build_strategy_candidates_shared
 from experiments.runner import build_strategy_export_payload
 from experiments.runner import summarize_experiment_run
 from experiments.splits import build_rolling_validation_folds as build_rolling_validation_folds_shared
-from train import PortfolioOptimizationLoss
+from models.rank_model import StockTransformer
+from objectives.ranking_loss import PortfolioOptimizationLoss
 from train import build_validation_fold_loaders
 from train import evaluate_ranking_folds
 from train import preprocess_val_data
@@ -171,6 +171,23 @@ def _build_criterion():
     )
 
 
+def build_reselected_strategy_payload(
+    *,
+    run_summary,
+    validation_folds,
+    runtime_config,
+    reselected_at=None,
+):
+    return build_strategy_export_payload(
+        run_summary=run_summary,
+        validation_folds=validation_folds,
+        runtime_config=runtime_config,
+        source="validation_reselect",
+        exported_at=reselected_at,
+        exported_at_field="reselected_at",
+    )
+
+
 def _dump_strategy(path: str, payload: dict):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=4)
@@ -313,12 +330,10 @@ def main():
         f"flat={regime_summary['flat_return_fold_count']}",
     )
 
-    strategy_payload = build_strategy_export_payload(
+    strategy_payload = build_reselected_strategy_payload(
         run_summary=run_summary,
         validation_folds=val_folds,
         runtime_config=config,
-        source="validation_reselect",
-        exported_at_field="reselected_at",
     )
 
     reselect_path = os.path.join(output_dir, "best_strategy_reselected.json")

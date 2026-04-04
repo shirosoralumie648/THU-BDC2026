@@ -29,6 +29,38 @@ class _FakeAdapter:
         )
 
 
+class _EmptyAdapter:
+    adapter_name = 'fake_adapter'
+
+    def fetch(self, request, spec):
+        return pd.DataFrame(columns=['instrument_id', 'trade_date', 'close'])
+
+
+class _FailingAdapter:
+    adapter_name = 'fake_adapter'
+
+    def fetch(self, request, spec):
+        raise RuntimeError('malformed provider payload')
+
+
+class _RetryableAdapter:
+    adapter_name = 'fake_adapter'
+
+    def fetch(self, request, spec):
+        raise TimeoutError('provider timeout')
+
+
+class _BadSchemaAdapter:
+    adapter_name = 'fake_adapter'
+
+    def fetch(self, request, spec):
+        return pd.DataFrame(
+            [
+                {'instrument_id': '000001', 'trade_date': '2024-01-02'},
+            ]
+        )
+
+
 class IngestionServiceTests(unittest.TestCase):
     def test_run_sync_executes_adapter_quality_and_job_persistence(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -58,6 +90,120 @@ class IngestionServiceTests(unittest.TestCase):
             self.assertEqual(finished.result.get('row_count'), 2)
             self.assertEqual(finished.result.get('status'), 'succeeded')
             self.assertTrue(finished.result.get('finished_at'))
+
+    def test_run_sync_marks_fetch_failures_without_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = DatasetSpec(
+                dataset='market_bar_1d',
+                domain='market',
+                granularity='1d',
+                source_name='fake',
+                adapter_name='fake_adapter',
+                request_spec={},
+                schema_spec={'primary_key': ['instrument_id', 'trade_date']},
+                quality_spec={'required_columns': ['instrument_id', 'trade_date', 'close']},
+                storage_spec={'raw_uri': 'data/raw/{dataset}/{run_id}.csv', 'curated_uri': 'data/curated/{dataset}/{run_id}.csv'},
+            )
+            service = IngestionService.for_testing(
+                specs={'market_bar_1d': spec},
+                adapters={'fake_adapter': _FailingAdapter()},
+                runtime_root=tmp,
+            )
+
+            job = service.create_job(IngestionRequest(dataset='market_bar_1d', start='2024-01-01', end='2024-01-31'))
+
+            with self.assertRaisesRegex(RuntimeError, 'malformed provider payload'):
+                service.run_job(job.job_id)
+
+            failed = service.get_job(job.job_id)
+            self.assertEqual(failed.status, 'fetch_failed')
+            self.assertEqual(failed.errors, ['malformed provider payload'])
+            self.assertEqual(failed.manifest_path, '')
+
+    def test_run_sync_marks_retryable_failures_for_provider_timeouts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = DatasetSpec(
+                dataset='market_bar_1d',
+                domain='market',
+                granularity='1d',
+                source_name='fake',
+                adapter_name='fake_adapter',
+                request_spec={},
+                schema_spec={'primary_key': ['instrument_id', 'trade_date']},
+                quality_spec={'required_columns': ['instrument_id', 'trade_date', 'close']},
+                storage_spec={'raw_uri': 'data/raw/{dataset}/{run_id}.csv', 'curated_uri': 'data/curated/{dataset}/{run_id}.csv'},
+            )
+            service = IngestionService.for_testing(
+                specs={'market_bar_1d': spec},
+                adapters={'fake_adapter': _RetryableAdapter()},
+                runtime_root=tmp,
+            )
+
+            job = service.create_job(IngestionRequest(dataset='market_bar_1d', start='2024-01-01', end='2024-01-31'))
+
+            with self.assertRaisesRegex(TimeoutError, 'provider timeout'):
+                service.run_job(job.job_id)
+
+            failed = service.get_job(job.job_id)
+            self.assertEqual(failed.status, 'retryable_failed')
+            self.assertEqual(failed.errors, ['provider timeout'])
+            self.assertEqual(failed.manifest_path, '')
+
+    def test_run_sync_marks_quality_failures_before_manifest_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = DatasetSpec(
+                dataset='market_bar_1d',
+                domain='market',
+                granularity='1d',
+                source_name='fake',
+                adapter_name='fake_adapter',
+                request_spec={},
+                schema_spec={'primary_key': ['instrument_id', 'trade_date']},
+                quality_spec={'required_columns': ['instrument_id', 'trade_date', 'close']},
+                storage_spec={'raw_uri': 'data/raw/{dataset}/{run_id}.csv', 'curated_uri': 'data/curated/{dataset}/{run_id}.csv'},
+            )
+            service = IngestionService.for_testing(
+                specs={'market_bar_1d': spec},
+                adapters={'fake_adapter': _BadSchemaAdapter()},
+                runtime_root=tmp,
+            )
+
+            job = service.create_job(IngestionRequest(dataset='market_bar_1d', start='2024-01-01', end='2024-01-31'))
+
+            with self.assertRaisesRegex(ValueError, 'missing required columns'):
+                service.run_job(job.job_id)
+
+            failed = service.get_job(job.job_id)
+            self.assertEqual(failed.status, 'quality_failed')
+            self.assertIn('missing required columns', failed.errors[0])
+            self.assertEqual(failed.manifest_path, '')
+
+    def test_run_sync_keeps_empty_canonical_result_with_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = DatasetSpec(
+                dataset='market_bar_1d',
+                domain='market',
+                granularity='1d',
+                source_name='fake',
+                adapter_name='fake_adapter',
+                request_spec={},
+                schema_spec={'primary_key': ['instrument_id', 'trade_date']},
+                quality_spec={'required_columns': ['instrument_id', 'trade_date', 'close']},
+                storage_spec={'raw_uri': 'data/raw/{dataset}/{run_id}.csv', 'curated_uri': 'data/curated/{dataset}/{run_id}.csv'},
+            )
+            service = IngestionService.for_testing(
+                specs={'market_bar_1d': spec},
+                adapters={'fake_adapter': _EmptyAdapter()},
+                runtime_root=tmp,
+            )
+
+            job = service.create_job(IngestionRequest(dataset='market_bar_1d', start='2024-01-01', end='2024-01-31'))
+            finished = service.run_job(job.job_id)
+
+            self.assertEqual(finished.status, 'succeeded')
+            self.assertEqual(finished.result.get('row_count'), 0)
+            self.assertEqual(finished.warnings, ['empty_result'])
+            self.assertEqual(finished.result.get('warnings'), ['empty_result'])
 
 
 class QualityGateTests(unittest.TestCase):
