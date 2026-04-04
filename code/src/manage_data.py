@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import sys
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
@@ -29,6 +30,18 @@ from ingestion.service import IngestionService
 
 def utc_timestamp() -> str:
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def _exception_message(exc: Exception) -> str:
+    if exc.args:
+        first = exc.args[0]
+        if isinstance(first, str) and first:
+            return first
+    return str(exc)
+
+
+def _cli_error_message(exc: Exception) -> str:
+    return _exception_message(exc)
 
 
 def parse_args() -> argparse.Namespace:
@@ -786,40 +799,60 @@ def command_ingest(args: argparse.Namespace) -> int:
         return 0
 
     if subcommand == 'get':
-        job = service.get_job(str(args.job_id))
+        job_id = str(args.job_id)
+        try:
+            job = service.get_job(job_id)
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(f'job not found: {job_id}') from exc
         print(json.dumps(service.job_to_payload(job), ensure_ascii=False, indent=2))
         return 0
 
     if subcommand == 'run':
-        job = service.run_job(str(args.job_id))
+        job_id = str(args.job_id)
+        try:
+            job = service.run_job(job_id)
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(f'job not found: {job_id}') from exc
         print(json.dumps(service.job_to_payload(job), ensure_ascii=False, indent=2))
         return 0
 
     if subcommand == 'replay':
-        job = service.replay_job(str(args.job_id))
+        job_id = str(args.job_id)
+        try:
+            job = service.replay_job(job_id)
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(f'job not found: {job_id}') from exc
         print(json.dumps(service.job_to_payload(job), ensure_ascii=False, indent=2))
         return 0
 
     raise ValueError(f'未知 ingest 子命令: {subcommand}')
 
 
+def _run_command(args: argparse.Namespace) -> int:
+    if args.command == 'manifest':
+        return command_manifest(args)
+    if args.command == 'validate':
+        return command_validate(args)
+    if args.command == 'validate-pipeline-config':
+        return command_validate_pipeline_config(args)
+    if args.command == 'industry-index':
+        return command_industry_index(args)
+    if args.command == 'build-dataset':
+        return command_build_dataset(args)
+    if args.command == 'build-factor-graph':
+        return command_build_factor_graph(args)
+    if args.command == 'ingest':
+        return command_ingest(args)
+    raise ValueError(f'未知命令: {args.command}')
+
+
 def main() -> None:
     args = parse_args()
-    if args.command == 'manifest':
-        raise SystemExit(command_manifest(args))
-    if args.command == 'validate':
-        raise SystemExit(command_validate(args))
-    if args.command == 'validate-pipeline-config':
-        raise SystemExit(command_validate_pipeline_config(args))
-    if args.command == 'industry-index':
-        raise SystemExit(command_industry_index(args))
-    if args.command == 'build-dataset':
-        raise SystemExit(command_build_dataset(args))
-    if args.command == 'build-factor-graph':
-        raise SystemExit(command_build_factor_graph(args))
-    if args.command == 'ingest':
-        raise SystemExit(command_ingest(args))
-    raise SystemExit(f'未知命令: {args.command}')
+    try:
+        raise SystemExit(_run_command(args))
+    except (FileNotFoundError, ValueError, PipelineConfigError, KeyError, RuntimeError) as exc:
+        print(_cli_error_message(exc), file=sys.stderr)
+        raise SystemExit(2) from exc
 
 
 if __name__ == '__main__':

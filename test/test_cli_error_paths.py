@@ -1,0 +1,110 @@
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+import pandas as pd
+
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+SRC_ROOT = os.path.join(PROJECT_ROOT, 'code', 'src')
+
+
+def _write_minimal_pipeline_config(cfg_dir: Path):
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / 'datasets.yaml').write_text('version: 1\ndatasets: {}\n', encoding='utf-8')
+    (cfg_dir / 'factors.yaml').write_text('version: 1\nlayer_order: []\nfactor_nodes: []\n', encoding='utf-8')
+    (cfg_dir / 'storage.yaml').write_text(
+        '\n'.join(
+            [
+                'version: 1',
+                'layers:',
+                '  raw: {uri_template: data/raw/{dataset}/{run_id}.csv}',
+                '  curated: {uri_template: data/curated/{dataset}/{run_id}.csv}',
+                '  feature_long: {uri_template: data/feature_long/{dataset}.csv}',
+                '  feature_wide: {uri_template: data/feature_wide/{dataset}.csv}',
+                '  datasets: {uri_template: data/datasets/{dataset}.csv}',
+                '  manifests: {uri_template: data/manifests/{dataset}.json}',
+            ]
+        ),
+        encoding='utf-8',
+    )
+
+
+class CliErrorPathTests(unittest.TestCase):
+    def test_build_dataset_reports_missing_base_input_without_traceback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / 'out'
+            cmd = [
+                sys.executable,
+                os.path.join(SRC_ROOT, 'manage_data.py'),
+                'build-dataset',
+                '--base-input',
+                str(Path(tmp) / 'missing.csv'),
+                '--output-dir',
+                str(output_dir),
+            ]
+            result = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('未找到基础输入文件', result.stderr)
+            self.assertNotIn('Traceback', result.stderr)
+
+    def test_build_dataset_reports_missing_feature_input_without_traceback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cfg_dir = tmp_path / 'config'
+            base_path = tmp_path / 'stock_data.csv'
+            output_dir = tmp_path / 'out'
+            _write_minimal_pipeline_config(cfg_dir)
+            pd.DataFrame([{'股票代码': '000001.SZ', '日期': '2024-01-02', '收盘': 10.0}]).to_csv(
+                base_path,
+                index=False,
+                encoding='utf-8',
+            )
+
+            cmd = [
+                sys.executable,
+                os.path.join(SRC_ROOT, 'manage_data.py'),
+                'build-dataset',
+                '--base-input',
+                str(base_path),
+                '--feature-input',
+                str(tmp_path / 'missing_features.csv'),
+                '--pipeline-config-dir',
+                str(cfg_dir),
+                '--output-dir',
+                str(output_dir),
+            ]
+            result = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('未找到因子输入文件', result.stderr)
+            self.assertNotIn('Traceback', result.stderr)
+
+    def test_ingest_get_reports_missing_job_without_traceback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_root = Path(tmp) / 'runtime'
+            cmd = [
+                sys.executable,
+                os.path.join(SRC_ROOT, 'manage_data.py'),
+                'ingest',
+                'get',
+                '--job-id',
+                'job-missing',
+                '--config-dir',
+                './config',
+                '--runtime-root',
+                str(runtime_root),
+            ]
+            result = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('job not found: job-missing', result.stderr)
+            self.assertNotIn('Traceback', result.stderr)
+
+
+if __name__ == '__main__':
+    unittest.main()

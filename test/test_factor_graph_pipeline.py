@@ -14,6 +14,13 @@ SRC_ROOT = os.path.join(PROJECT_ROOT, 'code', 'src')
 
 
 class FactorGraphPipelineTests(unittest.TestCase):
+    def test_intraday_aggregation_source_no_longer_uses_groupby_apply(self):
+        source_path = os.path.join(SRC_ROOT, 'build_factor_graph.py')
+        with open(source_path, 'r', encoding='utf-8') as f:
+            source = f.read()
+
+        self.assertNotIn('groupby(keys, sort=False).apply', source)
+
     def test_build_factor_graph_end_to_end(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -536,6 +543,9 @@ class FactorGraphPipelineTests(unittest.TestCase):
             self.assertNotEqual(result_strict.returncode, 0)
             combined_output = (result_strict.stdout or '') + '\n' + (result_strict.stderr or '')
             self.assertIn('intraday_aggregate expression 非法', combined_output)
+            self.assertIn('节点 invalid_intraday_expr', combined_output)
+            self.assertIn('engine=intraday_aggregate', combined_output)
+            self.assertIn('strict=True', combined_output)
 
 
 if __name__ == '__main__':
