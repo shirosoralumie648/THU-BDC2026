@@ -26,6 +26,12 @@ from data_manager import save_data_manifest
 from utils import resolve_feature_indices
 
 
+def build_prediction_input_manifest(runtime_config):
+	data_manifest = collect_data_sources(runtime_config, include_csv_stats=True)
+	data_manifest['generated_at_utc'] = pd.Timestamp.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+	return data_manifest
+
+
 def preprocess_predict_data(df, stockid2idx, feature_pipeline):
 	feature_columns = list(feature_pipeline['active_features'])
 
@@ -217,7 +223,7 @@ def main():
 	if not os.path.exists(model_path):
 		raise FileNotFoundError(f'未找到模型文件: {model_path}')
 
-	data_manifest = collect_data_sources(config, include_csv_stats=True)
+	data_manifest = build_prediction_input_manifest(config)
 	manifest_path = save_data_manifest(config['output_dir'], data_manifest, filename='data_manifest_predict.json')
 	print(f'已生成预测数据源清单: {manifest_path}')
 

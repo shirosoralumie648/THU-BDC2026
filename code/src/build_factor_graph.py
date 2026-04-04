@@ -536,6 +536,42 @@ def _evaluate_intraday_expression(
     return value
 
 
+def _format_intraday_node_message(
+    *,
+    node_id: str,
+    engine: str,
+    strict: bool,
+    dependencies: List[str],
+    detail: str,
+) -> str:
+    return (
+        f'节点 {node_id} engine={engine} strict={strict} '
+        f'dependencies={dependencies} {detail}'
+    )
+
+
+def _compute_intraday_group_values(
+    minute_df: pd.DataFrame,
+    *,
+    keys: List[str],
+    compile_meta: Dict,
+    min_bars: int,
+) -> pd.DataFrame:
+    rows = []
+    grouped = minute_df.groupby(keys, sort=False)
+    for group_key, group in grouped:
+        if not isinstance(group_key, tuple):
+            group_key = (group_key,)
+        row = {key: group_key[idx] for idx, key in enumerate(keys)}
+        row['__value'] = _evaluate_intraday_expression(
+            group,
+            compile_meta=compile_meta,
+            min_bars=min_bars,
+        )
+        rows.append(row)
+    return pd.DataFrame(rows, columns=[*keys, '__value'])
+
+
 def _compute_intraday_nodes_from_minute(
     minute_df: pd.DataFrame,
     factor_nodes: List[Dict],
@@ -555,13 +591,21 @@ def _compute_intraday_nodes_from_minute(
     ]
     for node in intraday_nodes:
         node_id = str(node.get('id', '')).strip()
+        dependencies = [str(item).strip() for item in (node.get('dependencies', []) or [])]
+        engine = 'intraday_aggregate'
         compute = node.get('compute', {}) if isinstance(node, dict) else {}
         output_col = str((node.get('output') or {}).get('column', '')).strip()
         expression = str(compute.get('expression', '')).strip()
         min_bars = int(compute.get('min_bars', 1))
 
         if not output_col:
-            msg = f'节点 {node_id} 缺少 output.column'
+            msg = _format_intraday_node_message(
+                node_id=node_id,
+                engine=engine,
+                strict=bool(strict),
+                dependencies=dependencies,
+                detail='缺少 output.column',
+            )
             if strict:
                 errors.append(msg)
             else:
@@ -569,7 +613,13 @@ def _compute_intraday_nodes_from_minute(
             continue
 
         if not expression:
-            msg = f'节点 {node_id} intraday_aggregate 缺少 expression'
+            msg = _format_intraday_node_message(
+                node_id=node_id,
+                engine=engine,
+                strict=bool(strict),
+                dependencies=dependencies,
+                detail='intraday_aggregate 缺少 expression',
+            )
             if strict:
                 errors.append(msg)
             else:
@@ -581,7 +631,13 @@ def _compute_intraday_nodes_from_minute(
         try:
             compile_meta = _compile_intraday_expression(expression)
         except Exception as exc:
-            msg = f'节点 {node_id} intraday_aggregate expression 非法: {expression} | {exc}'
+            msg = _format_intraday_node_message(
+                node_id=node_id,
+                engine=engine,
+                strict=bool(strict),
+                dependencies=dependencies,
+                detail=f'intraday_aggregate expression 非法: {expression} | {exc}',
+            )
             if strict:
                 errors.append(msg)
             else:
@@ -591,17 +647,22 @@ def _compute_intraday_nodes_from_minute(
             continue
 
         try:
-            series = minute_df.groupby(keys, sort=False).apply(
-                lambda g: _evaluate_intraday_expression(
-                    g,
-                    compile_meta=compile_meta,
-                    min_bars=min_bars,
-                )
+            node_df = _compute_intraday_group_values(
+                minute_df,
+                keys=keys,
+                compile_meta=compile_meta,
+                min_bars=min_bars,
             )
         except Exception as exc:
-            msg = (
-                f'节点 {node_id} intraday_aggregate 计算失败: {exc} | '
-                f'expression={compile_meta.get("normalized_expression", expression)}'
+            msg = _format_intraday_node_message(
+                node_id=node_id,
+                engine=engine,
+                strict=bool(strict),
+                dependencies=dependencies,
+                detail=(
+                    f'intraday_aggregate 计算失败: {exc} | '
+                    f'expression={compile_meta.get("normalized_expression", expression)}'
+                ),
             )
             if strict:
                 errors.append(msg)
@@ -611,7 +672,7 @@ def _compute_intraday_nodes_from_minute(
             out[output_col] = np.nan
             continue
 
-        node_df = series.rename(output_col).reset_index()
+        node_df = node_df.rename(columns={'__value': output_col})
         out = out.merge(node_df, on=keys, how='left', validate='one_to_one')
         source_map[output_col] = (
             'hf_minute_input('
