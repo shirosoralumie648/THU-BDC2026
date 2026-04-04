@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from config import config
+from data_manager import build_csv_metadata_from_dataframe
 from data_manager import build_file_snapshot
 from data_manager import build_stock_industry_index
 from data_manager import collect_data_sources
@@ -611,6 +612,11 @@ def command_build_dataset(args: argparse.Namespace) -> int:
         raise ValueError(f'测试集开始日期晚于结束日期: {test_start.date()} > {test_end.date()}')
 
     base_df = pd.read_csv(base_input)
+    base_input_csv_meta = (
+        build_csv_metadata_from_dataframe(base_df)
+        if base_input.lower().endswith('.csv')
+        else None
+    )
     base_stock_col = _resolve_column(base_df, args.stock_col, ['股票代码', 'stock_id', 'code', 'ts_code'])
     base_date_col = _resolve_column(base_df, args.date_col, ['日期', 'date', 'datetime', 'trade_date'])
 
@@ -627,6 +633,7 @@ def command_build_dataset(args: argparse.Namespace) -> int:
         'matched_rows': 0,
         'coverage': 0.0,
     }
+    feature_input_csv_meta = None
 
     if feature_input:
         feature_input = _resolve_path(feature_input)
@@ -645,6 +652,8 @@ def command_build_dataset(args: argparse.Namespace) -> int:
                 )
 
         factor_df = _load_factor_dataframe(feature_input)
+        if feature_input.lower().endswith('.csv'):
+            feature_input_csv_meta = build_csv_metadata_from_dataframe(factor_df)
         factor_stock_col = _resolve_column(
             factor_df,
             args.factor_stock_col,
@@ -718,6 +727,9 @@ def command_build_dataset(args: argparse.Namespace) -> int:
         mirror.parent.mkdir(parents=True, exist_ok=True)
         test_df.to_csv(mirror, index=False)
 
+    train_csv_meta = build_csv_metadata_from_dataframe(train_df)
+    test_csv_meta = build_csv_metadata_from_dataframe(test_df)
+
     manifest_target = (
         _resolve_path(args.manifest_path)
         if str(args.manifest_path).strip()
@@ -742,14 +754,44 @@ def command_build_dataset(args: argparse.Namespace) -> int:
             'pipeline_config_dir': str(args.pipeline_config_dir),
         },
         'inputs': {
-            'base_input': build_file_snapshot(base_input, inspect_csv=True),
-            'feature_input': build_file_snapshot(feature_input, inspect_csv=True),
+            'base_input': build_file_snapshot(
+                base_input,
+                inspect_csv=True,
+                csv_metadata=base_input_csv_meta,
+            ),
+            'feature_input': build_file_snapshot(
+                feature_input,
+                inspect_csv=True,
+                csv_metadata=feature_input_csv_meta,
+            ),
         },
         'outputs': {
-            'train_csv': build_file_snapshot(str(train_path), inspect_csv=True),
-            'test_csv': build_file_snapshot(str(test_path), inspect_csv=True),
-            'train_csv_mirrors': [build_file_snapshot(str(path), inspect_csv=True) for path in train_mirror_paths],
-            'test_csv_mirrors': [build_file_snapshot(str(path), inspect_csv=True) for path in test_mirror_paths],
+            'train_csv': build_file_snapshot(
+                str(train_path),
+                inspect_csv=True,
+                csv_metadata=train_csv_meta,
+            ),
+            'test_csv': build_file_snapshot(
+                str(test_path),
+                inspect_csv=True,
+                csv_metadata=test_csv_meta,
+            ),
+            'train_csv_mirrors': [
+                build_file_snapshot(
+                    str(path),
+                    inspect_csv=True,
+                    csv_metadata=train_csv_meta,
+                )
+                for path in train_mirror_paths
+            ],
+            'test_csv_mirrors': [
+                build_file_snapshot(
+                    str(path),
+                    inspect_csv=True,
+                    csv_metadata=test_csv_meta,
+                )
+                for path in test_mirror_paths
+            ],
         },
         'stats': {
             'base_rows': int(len(base_df)),

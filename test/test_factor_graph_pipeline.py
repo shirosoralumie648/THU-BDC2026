@@ -21,6 +21,16 @@ class FactorGraphPipelineTests(unittest.TestCase):
 
         self.assertNotIn('groupby(keys, sort=False).apply', source)
 
+    def test_macro_asof_join_source_no_longer_merges_base_frame_per_node(self):
+        source_path = os.path.join(SRC_ROOT, 'build_factor_graph.py')
+        with open(source_path, 'r', encoding='utf-8') as f:
+            source = f.read()
+
+        self.assertNotIn(
+            "base_df = base_df.merge(series_asof.rename(columns={'value': output_col}), on='trade_date', how='left')",
+            source,
+        )
+
     def test_build_factor_graph_end_to_end(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -111,6 +121,8 @@ class FactorGraphPipelineTests(unittest.TestCase):
             self.assertIn('f_ret_1d', out_df.columns)
             self.assertIn('f_hf_realized_vol_1d', out_df.columns)
             self.assertIn('f_macro_m2_yoy', out_df.columns)
+            self.assertIn('f_macro_shibor_3m', out_df.columns)
+            self.assertIn('f_macro_usdcny', out_df.columns)
             self.assertIn('f_momentum_quality_score', out_df.columns)
             self.assertIn('f_regime_risk_on', out_df.columns)
 
@@ -124,6 +136,8 @@ class FactorGraphPipelineTests(unittest.TestCase):
             statuses = manifest.get('node_status', [])
             self.assertTrue(any(item.get('id') == 'ret_1d' and item.get('status') == 'ok' for item in statuses))
             self.assertTrue(any(item.get('id') == 'macro_m2_yoy_asof' and item.get('status') == 'ok' for item in statuses))
+            self.assertTrue(any(item.get('id') == 'macro_shibor_3m_asof' and item.get('status') == 'ok' for item in statuses))
+            self.assertTrue(any(item.get('id') == 'macro_usdcny_asof' and item.get('status') == 'ok' for item in statuses))
 
     def test_build_factor_graph_with_hf_minute_input(self):
         with tempfile.TemporaryDirectory() as tmp:

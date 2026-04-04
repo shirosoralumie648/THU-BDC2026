@@ -46,6 +46,13 @@ def _resolve_path(path_str: str) -> Path:
     return (_project_root() / p).resolve()
 
 
+def _get_safe_yaml_loader(yaml_module):
+    loader = getattr(yaml_module, 'CSafeLoader', None)
+    if loader is not None:
+        return loader
+    return yaml_module.SafeLoader
+
+
 def load_yaml_file(path: str, *, required: bool = True) -> Dict[str, Any]:
     target = _resolve_path(path)
     if not target.exists():
@@ -62,7 +69,7 @@ def load_yaml_file(path: str, *, required: bool = True) -> Dict[str, Any]:
 
     try:
         with open(target, 'r', encoding='utf-8') as f:
-            payload = yaml.safe_load(f) or {}
+            payload = yaml.load(f, Loader=_get_safe_yaml_loader(yaml)) or {}
     except Exception as exc:
         raise PipelineConfigError(f'YAML 解析失败: {target} | {exc}') from exc
 

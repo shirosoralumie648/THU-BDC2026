@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -10,7 +11,10 @@ SRC_ROOT = os.path.join(PROJECT_ROOT, 'code', 'src')
 if SRC_ROOT not in sys.path:
     sys.path.insert(0, SRC_ROOT)
 
+import yaml
+
 from pipeline_config import PipelineConfigError
+from pipeline_config import load_yaml_file
 from pipeline_config import load_pipeline_configs
 from pipeline_config import validate_datasets_config
 from pipeline_config import validate_factors_config
@@ -104,6 +108,29 @@ class PipelineConfigErrorTests(unittest.TestCase):
             self.assertIn('不支持的 compute.engine: sql', message)
             self.assertIn('缺少 output.column', message)
             self.assertIn('schema.primary_key 必须为数组', message)
+
+    def test_load_yaml_file_prefers_c_safe_loader_when_available(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / 'config.yaml'
+            cfg_path.write_text('version: 1\nitems: []\n', encoding='utf-8')
+
+            with mock.patch.object(yaml, 'load', wraps=yaml.load) as load_mock:
+                payload = load_yaml_file(str(cfg_path))
+
+        self.assertEqual(payload['version'], 1)
+        self.assertIs(load_mock.call_args.kwargs['Loader'], yaml.CSafeLoader)
+
+    def test_load_yaml_file_falls_back_to_safe_loader_when_c_loader_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / 'config.yaml'
+            cfg_path.write_text('version: 1\nitems: []\n', encoding='utf-8')
+
+            with mock.patch.object(yaml, 'load', wraps=yaml.load) as load_mock:
+                with mock.patch.object(yaml, 'CSafeLoader', None):
+                    payload = load_yaml_file(str(cfg_path))
+
+        self.assertEqual(payload['version'], 1)
+        self.assertIs(load_mock.call_args.kwargs['Loader'], yaml.SafeLoader)
 
 
 if __name__ == '__main__':

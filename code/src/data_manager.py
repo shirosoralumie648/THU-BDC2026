@@ -634,24 +634,14 @@ def collect_data_sources(config: Dict, *, include_csv_stats: bool = False) -> Di
     }
 
 
-def inspect_csv_metadata(
-    path: str,
+def build_csv_metadata_from_dataframe(
+    df: pd.DataFrame,
     *,
     date_col_candidates: Optional[Iterable[str]] = None,
     stock_col_candidates: Optional[Iterable[str]] = None,
 ) -> Dict:
-    if not path or not os.path.exists(path):
-        return {}
-
     date_candidates = list(date_col_candidates or ['日期', 'date', 'datetime', 'trade_date'])
     stock_candidates = list(stock_col_candidates or ['股票代码', 'stock_id', 'code', 'ts_code'])
-    try:
-        df = pd.read_csv(path)
-    except (pd.errors.ParserError, pd.errors.EmptyDataError) as exc:
-        return {'status': 'error', 'error_code': 'csv_parse_error', 'message': str(exc)}
-    except Exception as exc:
-        return {'status': 'error', 'error_code': 'csv_read_error', 'message': str(exc)}
-
     info = {
         'status': 'ok',
         'row_count': int(len(df)),
@@ -677,10 +667,35 @@ def inspect_csv_metadata(
     return info
 
 
+def inspect_csv_metadata(
+    path: str,
+    *,
+    date_col_candidates: Optional[Iterable[str]] = None,
+    stock_col_candidates: Optional[Iterable[str]] = None,
+) -> Dict:
+    if not path or not os.path.exists(path):
+        return {}
+
+    date_candidates = list(date_col_candidates or ['日期', 'date', 'datetime', 'trade_date'])
+    stock_candidates = list(stock_col_candidates or ['股票代码', 'stock_id', 'code', 'ts_code'])
+    try:
+        df = pd.read_csv(path)
+    except (pd.errors.ParserError, pd.errors.EmptyDataError) as exc:
+        return {'status': 'error', 'error_code': 'csv_parse_error', 'message': str(exc)}
+    except Exception as exc:
+        return {'status': 'error', 'error_code': 'csv_read_error', 'message': str(exc)}
+    return build_csv_metadata_from_dataframe(
+        df,
+        date_col_candidates=date_candidates,
+        stock_col_candidates=stock_candidates,
+    )
+
+
 def build_file_snapshot(
     path: str,
     *,
     inspect_csv: bool = False,
+    csv_metadata: Optional[Dict] = None,
     date_col_candidates: Optional[Iterable[str]] = None,
     stock_col_candidates: Optional[Iterable[str]] = None,
 ) -> Dict:
@@ -701,11 +716,13 @@ def build_file_snapshot(
         errors.append(_snapshot_error('stat_failed', str(exc)))
 
     if inspect_csv and abs_path.lower().endswith('.csv'):
-        csv_meta = inspect_csv_metadata(
-            abs_path,
-            date_col_candidates=date_col_candidates,
-            stock_col_candidates=stock_col_candidates,
-        )
+        csv_meta = csv_metadata
+        if csv_meta is None:
+            csv_meta = inspect_csv_metadata(
+                abs_path,
+                date_col_candidates=date_col_candidates,
+                stock_col_candidates=stock_col_candidates,
+            )
         if csv_meta:
             snapshot['csv'] = csv_meta
             if csv_meta.get('status') == 'error':

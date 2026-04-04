@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 
 from config import config
+from data_manager import build_csv_metadata_from_dataframe
 from data_manager import build_file_snapshot
 from data_manager import infer_existing_column
 from data_manager import normalize_stock_code_series
@@ -210,8 +211,7 @@ def _detect_hf_daily_columns(df: pd.DataFrame) -> Dict[str, str]:
     return mapping
 
 
-def _load_hf_daily_table(path: str) -> pd.DataFrame:
-    df = _load_table(path)
+def _canonicalize_hf_daily_table(df: pd.DataFrame) -> pd.DataFrame:
     stock_col = _resolve_column(
         df,
         preferred='instrument_id',
@@ -243,8 +243,11 @@ def _load_hf_daily_table(path: str) -> pd.DataFrame:
     return out.reset_index(drop=True)
 
 
-def _load_hf_minute_table(path: str) -> pd.DataFrame:
-    df = _load_table(path)
+def _load_hf_daily_table(path: str) -> pd.DataFrame:
+    return _canonicalize_hf_daily_table(_load_table(path))
+
+
+def _canonicalize_hf_minute_table(df: pd.DataFrame) -> pd.DataFrame:
     stock_col = _resolve_column(
         df,
         preferred='instrument_id',
@@ -289,6 +292,10 @@ def _load_hf_minute_table(path: str) -> pd.DataFrame:
         keep='last',
     )
     return out.reset_index(drop=True)
+
+
+def _load_hf_minute_table(path: str) -> pd.DataFrame:
+    return _canonicalize_hf_minute_table(_load_table(path))
 
 
 INTRADAY_ALLOWED_FUNCTIONS = {
@@ -683,8 +690,7 @@ def _compute_intraday_nodes_from_minute(
     return out, source_map, issue_map, warnings, errors
 
 
-def _load_macro_table(path: str) -> pd.DataFrame:
-    df = _load_table(path)
+def _canonicalize_macro_table(df: pd.DataFrame) -> pd.DataFrame:
     series_col = _resolve_column(
         df,
         preferred='series_id',
@@ -714,6 +720,10 @@ def _load_macro_table(path: str) -> pd.DataFrame:
     out = out.dropna(subset=['series_id', 'available_time']).copy()
     out = out.sort_values(['series_id', 'available_time'])
     return out.reset_index(drop=True)
+
+
+def _load_macro_table(path: str) -> pd.DataFrame:
+    return _canonicalize_macro_table(_load_table(path))
 
 
 def _compute_macro_series_asof(
@@ -926,7 +936,13 @@ def main(argv: Optional[List[str]] = None) -> None:
     base_input = _resolve_path(args.base_input)
     if not os.path.exists(base_input):
         raise FileNotFoundError(f'未找到 base-input: {base_input}')
-    base_df = _canonicalize_daily_base(_load_table(base_input))
+    base_source_df = _load_table(base_input)
+    base_input_csv_meta = (
+        build_csv_metadata_from_dataframe(base_source_df)
+        if base_input.lower().endswith('.csv')
+        else None
+    )
+    base_df = _canonicalize_daily_base(base_source_df)
 
     node_status = []
     warnings = []
@@ -937,9 +953,13 @@ def main(argv: Optional[List[str]] = None) -> None:
     if hf_input:
         hf_input = _resolve_path(hf_input)
     hf_df = None
+    hf_input_csv_meta = None
     if hf_input:
         if os.path.exists(hf_input):
-            hf_df = _load_hf_daily_table(hf_input)
+            hf_source_df = _load_table(hf_input)
+            if hf_input.lower().endswith('.csv'):
+                hf_input_csv_meta = build_csv_metadata_from_dataframe(hf_source_df)
+            hf_df = _canonicalize_hf_daily_table(hf_source_df)
             base_df = base_df.merge(
                 hf_df,
                 on=['instrument_id', 'trade_date'],
@@ -960,10 +980,14 @@ def main(argv: Optional[List[str]] = None) -> None:
     if hf_minute_input:
         hf_minute_input = _resolve_path(hf_minute_input)
     minute_df = None
+    hf_minute_input_csv_meta = None
     intraday_issue_map: Dict[str, str] = {}
     if hf_minute_input:
         if os.path.exists(hf_minute_input):
-            minute_df = _load_hf_minute_table(hf_minute_input)
+            minute_source_df = _load_table(hf_minute_input)
+            if hf_minute_input.lower().endswith('.csv'):
+                hf_minute_input_csv_meta = build_csv_metadata_from_dataframe(minute_source_df)
+            minute_df = _canonicalize_hf_minute_table(minute_source_df)
             minute_factor_df, minute_source_map, minute_issue_map, minute_warnings, minute_errors = _compute_intraday_nodes_from_minute(
                 minute_df,
                 factor_nodes,
@@ -1005,14 +1029,26 @@ def main(argv: Optional[List[str]] = None) -> None:
     if macro_input:
         macro_input = _resolve_path(macro_input)
     macro_df = None
+    macro_input_csv_meta = None
     if macro_input:
         if os.path.exists(macro_input):
-            macro_df = _load_macro_table(macro_input)
+            macro_source_df = _load_table(macro_input)
+            if macro_input.lower().endswith('.csv'):
+                macro_input_csv_meta = build_csv_metadata_from_dataframe(macro_source_df)
+            macro_df = _canonicalize_macro_table(macro_source_df)
         else:
             msg = f'macro-input 不存在: {macro_input}'
             if args.strict:
                 raise FileNotFoundError(msg)
             warnings.append(msg)
+
+    macro_join_frame = None
+    if macro_df is not None:
+        macro_join_frame = pd.DataFrame(
+            {
+                'trade_date': pd.to_datetime(base_df['trade_date']).dropna().drop_duplicates().sort_values()
+            }
+        ).reset_index(drop=True)
 
     for node in factor_nodes:
         node_id = str(node.get('id', '')).strip()
@@ -1088,13 +1124,19 @@ def main(argv: Optional[List[str]] = None) -> None:
                 max_staleness = compute.get('max_staleness_days')
                 fill_method = str(compute.get('fill_method', 'forward'))
                 series_asof = _compute_macro_series_asof(
-                    base_df['trade_date'],
+                    macro_join_frame['trade_date'] if macro_join_frame is not None else base_df['trade_date'],
                     macro_df,
                     series_id=series_id,
                     max_staleness_days=int(max_staleness) if max_staleness is not None else None,
                     fill_method=fill_method,
                 )
-                base_df = base_df.merge(series_asof.rename(columns={'value': output_col}), on='trade_date', how='left')
+                if macro_join_frame is not None:
+                    macro_join_frame = macro_join_frame.merge(
+                        series_asof.rename(columns={'value': output_col}),
+                        on='trade_date',
+                        how='left',
+                        validate='one_to_one',
+                    )
                 status['status'] = 'ok'
                 status['message'] = f'series_id={series_id}'
             node_status.append(status)
@@ -1111,6 +1153,16 @@ def main(argv: Optional[List[str]] = None) -> None:
             status['message'] = msg
             warnings.append(msg)
         node_status.append(status)
+
+    if macro_join_frame is not None:
+        macro_columns = [col for col in macro_join_frame.columns if col != 'trade_date']
+        if macro_columns:
+            base_df = base_df.merge(
+                macro_join_frame,
+                on='trade_date',
+                how='left',
+                validate='many_to_one',
+            )
 
     expression_specs = _build_expression_specs(factor_nodes)
     base_df, plan = _compute_expression_factors(base_df, expression_specs)
@@ -1176,6 +1228,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     output_path = _resolve_path(output_path)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     output_df.to_csv(output_path, index=False, encoding='utf-8')
+    output_csv_meta = build_csv_metadata_from_dataframe(output_df)
 
     build_manifest_cfg = factors_cfg.get('build_manifest', {}) if isinstance(factors_cfg, dict) else {}
     manifest_path = str(args.manifest_path or '').strip()
@@ -1216,17 +1269,37 @@ def main(argv: Optional[List[str]] = None) -> None:
         'factor_fingerprint': factor_fingerprint,
         'generated_at_utc': _utc_now_iso(),
         'input_data_versions': {
-            'base_input': build_file_snapshot(base_input, inspect_csv=True),
-            'hf_daily_input': build_file_snapshot(hf_input, inspect_csv=True),
-            'hf_minute_input': build_file_snapshot(hf_minute_input, inspect_csv=True),
-            'macro_input': build_file_snapshot(macro_input, inspect_csv=True),
+            'base_input': build_file_snapshot(
+                base_input,
+                inspect_csv=True,
+                csv_metadata=base_input_csv_meta,
+            ),
+            'hf_daily_input': build_file_snapshot(
+                hf_input,
+                inspect_csv=True,
+                csv_metadata=hf_input_csv_meta,
+            ),
+            'hf_minute_input': build_file_snapshot(
+                hf_minute_input,
+                inspect_csv=True,
+                csv_metadata=hf_minute_input_csv_meta,
+            ),
+            'macro_input': build_file_snapshot(
+                macro_input,
+                inspect_csv=True,
+                csv_metadata=macro_input_csv_meta,
+            ),
         },
         'node_status': node_status,
         'row_count': int(len(output_df)),
         'quality_summary': quality_summary,
         'output_paths': {
             'wide_csv': output_path,
-            'wide_csv_snapshot': build_file_snapshot(output_path, inspect_csv=True),
+            'wide_csv_snapshot': build_file_snapshot(
+                output_path,
+                inspect_csv=True,
+                csv_metadata=output_csv_meta,
+            ),
         },
         'code_version': _git_code_version(),
         'pipeline_config_validation': report.to_dict(),

@@ -15,6 +15,7 @@ SRC_ROOT = os.path.join(PROJECT_ROOT, 'code', 'src')
 if SRC_ROOT not in sys.path:
     sys.path.insert(0, SRC_ROOT)
 
+from data_manager import build_csv_metadata_from_dataframe
 from data_manager import build_file_snapshot
 
 from ingestion.manifests import build_ingestion_manifest
@@ -158,6 +159,10 @@ class ManifestContractTests(unittest.TestCase):
             self.assertEqual(manifest['inputs']['base_input']['exists'], True)
             self.assertEqual(manifest['outputs']['train_csv']['exists'], True)
             self.assertEqual(manifest['outputs']['test_csv']['exists'], True)
+            self.assertEqual(manifest['inputs']['base_input']['csv']['status'], 'ok')
+            self.assertEqual(manifest['inputs']['base_input']['csv']['row_count'], 3)
+            self.assertEqual(manifest['outputs']['train_csv']['csv']['row_count'], 2)
+            self.assertEqual(manifest['outputs']['test_csv']['csv']['row_count'], 1)
             self.assertEqual(manifest['stats']['train_rows'], 2)
             self.assertEqual(manifest['stats']['test_rows'], 1)
             self.assertFalse(manifest['factor_merge']['used'])
@@ -255,6 +260,11 @@ class ManifestContractTests(unittest.TestCase):
             self.assertIn('output_paths', manifest)
             self.assertIn('execution_plan', manifest)
             self.assertTrue(manifest['output_paths']['wide_csv_snapshot']['exists'])
+            self.assertEqual(manifest['input_data_versions']['base_input']['csv']['status'], 'ok')
+            self.assertEqual(manifest['input_data_versions']['base_input']['csv']['row_count'], len(base_rows))
+            self.assertEqual(manifest['input_data_versions']['hf_daily_input']['csv']['row_count'], len(hf_rows))
+            self.assertEqual(manifest['input_data_versions']['macro_input']['csv']['row_count'], len(macro_rows))
+            self.assertEqual(manifest['output_paths']['wide_csv_snapshot']['csv']['row_count'], 50)
             self.assertEqual(manifest['pipeline_config_validation']['valid'], True)
             self.assertGreater(manifest['execution_plan']['total_nodes'], 0)
 
@@ -329,6 +339,24 @@ class ManifestContractTests(unittest.TestCase):
         self.assertNotIn('error_code', snapshot['csv'])
         self.assertNotIn('message', snapshot['csv'])
         self.assertNotIn('errors', snapshot)
+
+    def test_build_file_snapshot_uses_precomputed_csv_metadata_without_reloading_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = Path(tmp) / 'ok.csv'
+            csv_path.write_text('股票代码,日期\n000001.SZ,2024-01-02\n', encoding='utf-8')
+            precomputed = build_csv_metadata_from_dataframe(
+                pd.DataFrame([{'股票代码': '000001.SZ', '日期': '2024-01-02'}])
+            )
+
+            with patch('data_manager.pd.read_csv', side_effect=AssertionError('unexpected reread')):
+                snapshot = build_file_snapshot(
+                    str(csv_path),
+                    inspect_csv=True,
+                    csv_metadata=precomputed,
+                )
+
+        self.assertTrue(snapshot['exists'])
+        self.assertEqual(snapshot['csv'], precomputed)
 
     def test_build_file_snapshot_records_non_parse_csv_read_error(self):
         with tempfile.TemporaryDirectory() as tmp:
