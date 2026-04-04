@@ -480,6 +480,10 @@ class PortfolioOptimizationLoss(nn.Module):
         lambda_ndcg_topk=50,
         ic_weight=0.0,
         ic_mode='pearson',
+        topk_focus_weight=0.0,
+        topk_focus_k=5,
+        topk_focus_gain_mode='binary',
+        topk_focus_normalize=True,
     ):
         super(PortfolioOptimizationLoss, self).__init__()
         self.temperature = float(temperature)
@@ -489,6 +493,91 @@ class PortfolioOptimizationLoss(nn.Module):
         self.lambda_ndcg_topk = int(lambda_ndcg_topk)
         self.ic_weight = float(ic_weight)
         self.ic_mode = str(ic_mode).lower()
+        self.topk_focus_weight = float(topk_focus_weight)
+        self.topk_focus_k = int(topk_focus_k)
+        self.topk_focus_gain_mode = str(topk_focus_gain_mode).lower()
+        self.topk_focus_normalize = self._parse_bool(topk_focus_normalize)
+        self._validate_topk_focus_config()
+
+    @staticmethod
+    def _parse_bool(value):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {'true', '1', '1.0', 'yes', 'y', 'on'}:
+                return True
+            if normalized in {'false', '0', '0.0', 'no', 'n', 'off'}:
+                return False
+        return bool(value)
+
+    def _validate_topk_focus_config(self):
+        if self.topk_focus_weight < 0.0:
+            raise ValueError(f'topk_focus_weight 必须 >= 0，当前为 {self.topk_focus_weight}')
+        if self.topk_focus_gain_mode not in {'binary', 'linear'}:
+            raise ValueError(f'不支持的 topk_focus_gain_mode: {self.topk_focus_gain_mode}')
+        if self.topk_focus_weight > 0.0 and self.topk_focus_k <= 0:
+            raise ValueError(f'topk_focus_k 必须 >= 1，当前为 {self.topk_focus_k}')
+
+    def _resolve_topk_focus_weights(self, y_true):
+        n = y_true.numel()
+        if n <= 0:
+            return y_true.new_zeros((0,)), y_true.new_empty((0,), dtype=torch.long)
+
+        if self.topk_focus_k <= 0:
+            return y_true.new_zeros((n,)), y_true.new_empty((0,), dtype=torch.long)
+
+        k = min(self.topk_focus_k, n)
+        _, top_idx = torch.topk(y_true, k)
+        weights = y_true.new_zeros((n,))
+
+        if self.topk_focus_gain_mode == 'binary':
+            weights[top_idx] = 1.0
+        elif self.topk_focus_gain_mode == 'linear':
+            top_vals = y_true[top_idx]
+            min_val = torch.min(top_vals)
+            gains = top_vals - min_val
+            denom = torch.max(gains)
+            if denom <= 1e-8:
+                weights[top_idx] = 1.0
+            else:
+                weights[top_idx] = gains / (denom + 1e-8)
+        else:
+            raise ValueError(f'不支持的 topk_focus_gain_mode: {self.topk_focus_gain_mode}')
+
+        return weights, top_idx
+
+    def _topk_pairwise_focus_loss(self, y_pred, y_true):
+        n = y_true.numel()
+        if n <= 1:
+            return y_pred.new_zeros(())
+
+        weights, top_idx = self._resolve_topk_focus_weights(y_true)
+        if top_idx.numel() == 0 or torch.sum(weights) <= 0:
+            return y_pred.new_zeros(())
+
+        y_pred_top = y_pred[top_idx]
+        y_true_top = y_true[top_idx]
+        weights_top = weights[top_idx]
+
+        pred_diff = y_pred_top.unsqueeze(1) - y_pred.unsqueeze(0)
+        true_diff = y_true_top.unsqueeze(1) - y_true.unsqueeze(0)
+        pair_mask = true_diff > 0
+        if pair_mask.sum() == 0:
+            return y_pred.new_zeros(())
+
+        pair_weights = weights_top.unsqueeze(1)
+        weighted_loss = F.softplus(-pred_diff) * pair_weights * true_diff.abs()
+
+        if self.topk_focus_normalize:
+            denom = (pair_weights * pair_mask.float()).sum() + 1e-8
+            return weighted_loss[pair_mask].sum() / denom
+        focus_mask = pair_mask & (pair_weights > 0)
+        if focus_mask.sum() == 0:
+            return y_pred.new_zeros(())
+        return weighted_loss[focus_mask].mean()
 
     def _pairwise_ranknet_loss(self, y_pred, y_true):
         n = y_true.numel()
@@ -591,12 +680,17 @@ class PortfolioOptimizationLoss(nn.Module):
         pairwise_loss = self._pairwise_ranknet_loss(y_pred_flat, y_true_flat)
         lambda_ndcg_loss = self._lambda_ndcg_loss(y_pred_flat, y_true_flat)
         ic_loss = self._ic_regularization_loss(y_pred_flat, y_true_flat)
+        if self.topk_focus_weight > 0.0:
+            topk_focus_loss = self._topk_pairwise_focus_loss(y_pred_flat, y_true_flat)
+        else:
+            topk_focus_loss = y_pred_flat.new_zeros(())
 
         return (
             self.listnet_weight * listnet_loss
             + self.pairwise_weight * pairwise_loss
             + self.lambda_ndcg_weight * lambda_ndcg_loss
             + self.ic_weight * ic_loss
+            + self.topk_focus_weight * topk_focus_loss
         )
 
 
@@ -1908,6 +2002,10 @@ def main():
         lambda_ndcg_topk=int(config.get('lambda_ndcg_topk', 50)),
         ic_weight=float(config.get('ic_weight', 0.0)),
         ic_mode=str(config.get('ic_mode', 'pearson')),
+        topk_focus_weight=float(config.get('topk_focus_weight', 0.0)),
+        topk_focus_k=int(config.get('topk_focus_k', 5)),
+        topk_focus_gain_mode=str(config.get('topk_focus_gain_mode', 'binary')),
+        topk_focus_normalize=config.get('topk_focus_normalize', True),
     )
     optimizer = torch.optim.AdamW(
         model.parameters(),

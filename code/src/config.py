@@ -40,6 +40,10 @@ config = {
     'pos_weight': 50.0,      # 正样本权重 (针对前2%妖股)
     'tail_multiplier': 10.0, 
     'tail_percentile': 0.95, 
+    'topk_focus_weight': 0.0,
+    'topk_focus_k': 5,
+    'topk_focus_gain_mode': 'binary',
+    'topk_focus_normalize': True,
 
     # 标签处理：市场中性化 + MAD去极值（按日） + 截面标准化（按日）
     'use_label_market_neutralization': True,
