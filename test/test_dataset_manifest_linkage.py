@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -140,6 +141,62 @@ class DatasetManifestLinkageTests(unittest.TestCase):
                 any('当前激活因子指纹不一致' in msg for msg in mismatch_info.get('errors', [])),
                 msg=str(mismatch_info),
             )
+
+    def test_load_train_dataset_from_build_manifest_reuses_cached_manifest_payload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            output_dir = tmp_path / 'dataset_output'
+            output_dir.mkdir(parents=True, exist_ok=True)
+            train_csv = output_dir / 'train.csv'
+            manifest_path = output_dir / 'data_manifest_dataset_build.json'
+
+            pd.DataFrame(
+                [
+                    {'股票代码': '000001.SZ', '日期': '2024-01-02', '收盘': 10.0},
+                    {'股票代码': '000001.SZ', '日期': '2024-01-03', '收盘': 10.5},
+                ]
+            ).to_csv(train_csv, index=False, encoding='utf-8')
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        'action': 'build_dataset',
+                        'build_id': 'cached-build',
+                        'feature_set_version': 'vcache',
+                        'factor_fingerprint': 'cache-fingerprint',
+                        'outputs': {
+                            'train_csv': {
+                                'path': str(train_csv),
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding='utf-8',
+            )
+
+            config = {
+                'output_dir': str(output_dir),
+                'dataset_build_manifest_path': str(manifest_path),
+                'use_dataset_build_manifest': True,
+                'dataset_manifest_strict': False,
+                'dataset_manifest_require_factor_fingerprint': True,
+            }
+
+            with patch('data_manager.json.load', wraps=json.load) as mocked:
+                first_path, first_info = load_train_dataset_from_build_manifest(
+                    config,
+                    {'factor_fingerprint': 'cache-fingerprint'},
+                )
+                second_path, second_info = load_train_dataset_from_build_manifest(
+                    config,
+                    {'factor_fingerprint': 'cache-fingerprint'},
+                )
+
+            self.assertEqual(mocked.call_count, 1)
+            self.assertEqual(first_path, second_path)
+            self.assertEqual(first_info.get('factor_fingerprint'), 'cache-fingerprint')
+            self.assertEqual(second_info.get('factor_fingerprint'), 'cache-fingerprint')
 
 
 if __name__ == '__main__':

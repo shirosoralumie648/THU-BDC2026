@@ -1,6 +1,10 @@
+import json
 import os
 import sys
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -14,6 +18,7 @@ if SRC_ROOT not in sys.path:
 from factor_store import apply_factor_expressions
 from factor_store import build_factor_execution_plan
 from factor_store import build_factor_snapshot
+from factor_store import resolve_factor_pipeline
 
 
 class FactorStoreEngineTests(unittest.TestCase):
@@ -125,6 +130,58 @@ class FactorStoreEngineTests(unittest.TestCase):
         self.assertIn('snapshot', snapshot)
         self.assertIn('created_at', snapshot['snapshot'])
         self.assertEqual(snapshot['snapshot']['factor_fingerprint'], snapshot['factor_fingerprint'])
+
+    def test_resolve_factor_pipeline_reuses_cached_execution_plan_for_same_inputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            registry_path = tmp_path / 'builtin_factors.json'
+            store_path = tmp_path / 'factor_store.json'
+
+            registry_path.write_text(
+                json.dumps(
+                    {
+                        'feature_sets': {
+                            '39': [
+                                {
+                                    'name': 'f_close_copy',
+                                    'group': 'price',
+                                    'expression': '收盘',
+                                    'inputs': {},
+                                }
+                            ],
+                            '158+39': [],
+                        }
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding='utf-8',
+            )
+            store_path.write_text(
+                json.dumps(
+                    {
+                        'version': 1,
+                        'feature_sets': {
+                            '39': {
+                                'disabled_builtin_factors': [],
+                                'builtin_overrides': [],
+                                'custom_factors': [],
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding='utf-8',
+            )
+
+            with patch('factor_store.build_factor_execution_plan', wraps=build_factor_execution_plan) as mocked:
+                first = resolve_factor_pipeline('39', str(store_path), str(registry_path))
+                second = resolve_factor_pipeline('39', str(store_path), str(registry_path))
+
+            self.assertEqual(mocked.call_count, 1)
+            self.assertEqual(first['factor_fingerprint'], second['factor_fingerprint'])
+            self.assertEqual(first['active_features'], second['active_features'])
 
 
 if __name__ == '__main__':

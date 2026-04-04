@@ -1,5 +1,7 @@
+import copy
 import json
 import os
+from functools import lru_cache
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
@@ -10,6 +12,24 @@ STRUCTURED_DATA_SUBDIRS = {
     'train.csv': 'splits',
     'test.csv': 'splits',
 }
+
+
+def _file_signature(path: str) -> Tuple[str, int, int]:
+    abs_path = os.path.abspath(str(path))
+    stat = os.stat(abs_path)
+    return abs_path, int(stat.st_mtime_ns), int(stat.st_size)
+
+
+@lru_cache(maxsize=128)
+def _load_json_payload_cached(path: str, mtime_ns: int, size_bytes: int):
+    with open(path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def _load_json_payload(path: str):
+    abs_path, mtime_ns, size_bytes = _file_signature(path)
+    payload = _load_json_payload_cached(abs_path, mtime_ns, size_bytes)
+    return copy.deepcopy(payload)
 
 
 def infer_existing_column(df: pd.DataFrame, candidates: Iterable[str]) -> Optional[str]:
@@ -201,8 +221,7 @@ def load_train_dataset_from_build_manifest(
         return None, info
 
     try:
-        with open(manifest_path, 'r', encoding='utf-8') as f:
-            payload = json.load(f)
+        payload = _load_json_payload(manifest_path)
     except Exception as exc:
         msg = f'读取 dataset build manifest 失败: {manifest_path} | {exc}'
         if strict_mode:

@@ -246,7 +246,34 @@ def _compute_factor_fingerprint(feature_set, specs):
     return hashlib.sha256(payload).hexdigest()[:16]
 
 
-def resolve_factor_pipeline(feature_set, store_path, builtin_registry_path=DEFAULT_BUILTIN_FACTOR_REGISTRY_PATH):
+def _factor_pipeline_cache_key(store_path, builtin_registry_path):
+    abs_store_path = os.path.abspath(store_path)
+    ensure_factor_store(abs_store_path)
+    store_stat = os.stat(abs_store_path)
+
+    abs_registry_path = os.path.abspath(builtin_registry_path)
+    registry_stat = os.stat(abs_registry_path)
+
+    return (
+        abs_store_path,
+        int(store_stat.st_mtime_ns),
+        int(store_stat.st_size),
+        abs_registry_path,
+        int(registry_stat.st_mtime_ns),
+        int(registry_stat.st_size),
+    )
+
+
+@lru_cache(maxsize=64)
+def _resolve_factor_pipeline_cached(
+    feature_set,
+    store_path,
+    store_mtime_ns,
+    store_size,
+    builtin_registry_path,
+    registry_mtime_ns,
+    registry_size,
+):
     if feature_set not in FEATURE_ENGINEER_FUNC_MAP:
         raise ValueError(f'不支持的 feature_set: {feature_set}')
 
@@ -305,6 +332,27 @@ def resolve_factor_pipeline(feature_set, store_path, builtin_registry_path=DEFAU
             'group_counts': group_counts,
         },
     }
+
+
+def resolve_factor_pipeline(feature_set, store_path, builtin_registry_path=DEFAULT_BUILTIN_FACTOR_REGISTRY_PATH):
+    (
+        abs_store_path,
+        store_mtime_ns,
+        store_size,
+        abs_registry_path,
+        registry_mtime_ns,
+        registry_size,
+    ) = _factor_pipeline_cache_key(store_path, builtin_registry_path)
+    pipeline = _resolve_factor_pipeline_cached(
+        feature_set,
+        abs_store_path,
+        store_mtime_ns,
+        store_size,
+        abs_registry_path,
+        registry_mtime_ns,
+        registry_size,
+    )
+    return copy.deepcopy(pipeline)
 
 
 def _as_series(value, index):
