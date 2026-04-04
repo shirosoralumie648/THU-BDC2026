@@ -1169,7 +1169,29 @@ def _normalize_execution_spec(spec):
     return normalized
 
 
-def build_factor_execution_plan(factor_specs, error_prefix='因子'):
+def _serialize_factor_specs_for_cache(factor_specs):
+    normalized_specs = []
+    for spec in factor_specs:
+        normalized = {}
+        for key, value in dict(spec).items():
+            if str(key).startswith('_'):
+                continue
+            if key == 'inputs':
+                normalized[key] = _normalize_factor_inputs(value)
+            else:
+                normalized[key] = value
+        normalized.setdefault('inputs', {})
+        normalized_specs.append(normalized)
+    return json.dumps(
+        normalized_specs,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(',', ':'),
+        default=str,
+    )
+
+
+def _build_factor_execution_plan_uncached(factor_specs, error_prefix='因子'):
     if not factor_specs:
         return {
             'ordered_specs': [],
@@ -1288,6 +1310,25 @@ def build_factor_execution_plan(factor_specs, error_prefix='因子'):
             for spec in ordered_specs
         },
     }
+
+
+@lru_cache(maxsize=256)
+def _build_factor_execution_plan_cached(serialized_specs: str, error_prefix: str):
+    factor_specs = json.loads(serialized_specs)
+    return _build_factor_execution_plan_uncached(factor_specs, error_prefix=error_prefix)
+
+
+def build_factor_execution_plan(factor_specs, error_prefix='因子'):
+    if not factor_specs:
+        return {
+            'ordered_specs': [],
+            'time_series_specs': [],
+            'cross_sectional_specs': [],
+            'dependency_graph': {},
+        }
+    serialized_specs = _serialize_factor_specs_for_cache(factor_specs)
+    plan = _build_factor_execution_plan_cached(serialized_specs, str(error_prefix))
+    return copy.deepcopy(plan)
 
 
 def _resolve_input_value(raw_value, runtime_env):

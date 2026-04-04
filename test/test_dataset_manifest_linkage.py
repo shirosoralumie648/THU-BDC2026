@@ -15,7 +15,9 @@ SRC_ROOT = os.path.join(PROJECT_ROOT, 'code', 'src')
 if SRC_ROOT not in sys.path:
     sys.path.insert(0, SRC_ROOT)
 
+import manage_data as manage_data_module
 from data_manager import load_train_dataset_from_build_manifest
+from manage_data import _resolve_factor_fingerprint_from_feature_input
 
 
 class DatasetManifestLinkageTests(unittest.TestCase):
@@ -197,6 +199,52 @@ class DatasetManifestLinkageTests(unittest.TestCase):
             self.assertEqual(first_path, second_path)
             self.assertEqual(first_info.get('factor_fingerprint'), 'cache-fingerprint')
             self.assertEqual(second_info.get('factor_fingerprint'), 'cache-fingerprint')
+
+    def test_resolve_factor_fingerprint_reuses_cached_manifest_reads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            features_dir = tmp_path / 'features'
+            features_dir.mkdir(parents=True, exist_ok=True)
+            feature_path = features_dir / 'features.csv'
+            manifest_path = features_dir / 'factor_build_manifest.json'
+
+            pd.DataFrame(
+                [
+                    {'股票代码': '000001.SZ', '日期': '2024-01-02', 'f_ret_1d': 0.01},
+                ]
+            ).to_csv(feature_path, index=False, encoding='utf-8')
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        'action': 'build_factor_graph',
+                        'feature_set_version': 'vcache',
+                        'factor_fingerprint': 'fingerprint-cached',
+                        'output_paths': {
+                            'wide_csv': str(feature_path),
+                            'wide_csv_snapshot': {'path': str(feature_path)},
+                        },
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding='utf-8',
+            )
+
+            with patch('manage_data.json.load', wraps=manage_data_module.json.load) as mocked:
+                first = _resolve_factor_fingerprint_from_feature_input(
+                    str(feature_path),
+                    feature_set_version='vcache',
+                    pipeline_configs={},
+                )
+                second = _resolve_factor_fingerprint_from_feature_input(
+                    str(feature_path),
+                    feature_set_version='vcache',
+                    pipeline_configs={},
+                )
+
+            self.assertEqual(mocked.call_count, 1)
+            self.assertEqual(first, 'fingerprint-cached')
+            self.assertEqual(second, 'fingerprint-cached')
 
 
 if __name__ == '__main__':
