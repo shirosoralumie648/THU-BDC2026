@@ -29,15 +29,15 @@ def create_app(*, service: IngestionService | None = None, runtime_root: str | N
     app.state.ingestion_service = ingestion_service
 
     @app.get('/health')
-    def health():
+    async def health():
         return {'status': 'ok'}
 
     @app.get('/ingestion/datasets')
-    def list_datasets():
+    async def list_datasets():
         return {'datasets': sorted(ingestion_service.specs.keys())}
 
     @app.post('/ingestion/jobs')
-    def create_job(payload: dict):
+    async def create_job(payload: dict):
         try:
             request = IngestionRequest(**payload)
             job = ingestion_service.create_job(request)
@@ -46,7 +46,7 @@ def create_app(*, service: IngestionService | None = None, runtime_root: str | N
         return ingestion_service.job_to_payload(job)
 
     @app.get('/ingestion/jobs/{job_id}')
-    def get_job(job_id: str):
+    async def get_job(job_id: str):
         try:
             job = ingestion_service.get_job(job_id)
         except FileNotFoundError as exc:
@@ -54,7 +54,7 @@ def create_app(*, service: IngestionService | None = None, runtime_root: str | N
         return ingestion_service.job_to_payload(job)
 
     @app.post('/ingestion/jobs/{job_id}/run')
-    def run_job(job_id: str):
+    async def run_job(job_id: str):
         try:
             job = ingestion_service.run_job(job_id)
         except FileNotFoundError as exc:
@@ -64,7 +64,7 @@ def create_app(*, service: IngestionService | None = None, runtime_root: str | N
         return ingestion_service.job_to_payload(job)
 
     @app.post('/ingestion/replay')
-    def replay_job(payload: dict):
+    async def replay_job(payload: dict):
         job_id = str(payload.get('job_id', '')).strip()
         if not job_id:
             raise HTTPException(status_code=400, detail='job_id is required')
