@@ -45,6 +45,19 @@ def infer_existing_column(df: pd.DataFrame, candidates: Iterable[str]) -> Option
 
 def normalize_stock_code_series(series: pd.Series) -> pd.Series:
     s = series.fillna('').astype(str).str.strip().str.upper()
+    non_empty_mask = s != ''
+    len_ge_6 = s.str.len() >= 6
+    prefix_digits = s.str[:6]
+    suffix_digits = s.str[-6:]
+    prefix_mask = non_empty_mask & len_ge_6 & prefix_digits.str.isdigit()
+    suffix_mask = non_empty_mask & len_ge_6 & (~prefix_mask) & suffix_digits.str.isdigit()
+
+    if bool((prefix_mask | suffix_mask | (~non_empty_mask)).all()):
+        normalized = pd.Series('', index=s.index, dtype=object)
+        normalized = normalized.mask(prefix_mask, prefix_digits)
+        normalized = normalized.mask(suffix_mask, suffix_digits)
+        return normalized
+
     extracted = s.str.extract(r'(\d{6})', expand=False)
     digits = s.str.replace(r'[^0-9]', '', regex=True)
 

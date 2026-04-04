@@ -24,6 +24,11 @@ class HFDailyFactorPipelineTests(unittest.TestCase):
         normalized = normalize_stock_code_series(series).tolist()
         self.assertEqual(normalized, ['000001', '000002', '000003', '600519', '', ''])
 
+    def test_normalize_stock_code_series_falls_back_for_embedded_digit_formats(self):
+        series = pd.Series(['ABC000123XYZ', 'prefix_000456_tail'])
+        normalized = normalize_stock_code_series(series).tolist()
+        self.assertEqual(normalized, ['000123', '000456'])
+
     def test_merge_hf_daily_factors_merges_by_normalized_stock_and_date(self):
         with tempfile.TemporaryDirectory() as tmp:
             hf_path = os.path.join(tmp, 'hf_daily_factors.csv')
