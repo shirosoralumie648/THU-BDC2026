@@ -27,8 +27,6 @@ from data_manager import save_data_manifest
 from pipeline_config import load_pipeline_configs
 from pipeline_config import PipelineConfigError
 from pipeline_config import render_feature_csv_compat_uri
-from ingestion.models import IngestionRequest
-from ingestion.service import IngestionService
 
 
 class FactorManifestError(ValueError):
@@ -848,7 +846,9 @@ def command_build_factor_graph(args: argparse.Namespace) -> int:
     return 0
 
 
-def _build_ingestion_service(args: argparse.Namespace) -> IngestionService:
+def _build_ingestion_service(args: argparse.Namespace):
+    from ingestion.service import IngestionService
+
     return IngestionService.from_config_dir(
         str(getattr(args, 'config_dir', './config')),
         runtime_root=_resolve_path(str(getattr(args, 'runtime_root', './temp/ingestion_runtime'))),
@@ -865,6 +865,8 @@ def command_ingest(args: argparse.Namespace) -> int:
         return 0
 
     if subcommand == 'create':
+        from ingestion.models import IngestionRequest
+
         job = service.create_job(
             IngestionRequest(
                 dataset=str(args.dataset),
