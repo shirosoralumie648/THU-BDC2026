@@ -3,6 +3,7 @@ import numpy as np
 import joblib
 import os
 import re
+from collections import defaultdict
 from functools import lru_cache
 from tqdm import tqdm
 
@@ -1034,6 +1035,52 @@ def create_dataset(data, features, sequence_length, ranking_data_path=None):
     """保持原有接口，但内部调用新的排序数据集创建函数"""
     return create_ranking_dataset_multiprocess(data, features, sequence_length, ranking_data_path)
 
+
+def _aggregate_ranking_windows_by_date(
+    window_buckets,
+    *,
+    min_window_end_date=None,
+    max_window_end_date=None,
+    min_stocks_per_day=10,
+):
+    sequences = []
+    targets = []
+    vol_targets = []
+    relevance_scores = []
+    stock_indices = []
+
+    if min_window_end_date is not None:
+        min_window_end_date = pd.to_datetime(min_window_end_date)
+    if max_window_end_date is not None:
+        max_window_end_date = pd.to_datetime(max_window_end_date)
+
+    for date in tqdm(sorted(window_buckets), desc="Aggregating by date"):
+        date_ts = pd.Timestamp(date)
+        if min_window_end_date is not None and date_ts < min_window_end_date:
+            continue
+        if max_window_end_date is not None and date_ts > max_window_end_date:
+            continue
+
+        bucket = window_buckets[date]
+        if len(bucket['targets']) < min_stocks_per_day:
+            continue
+
+        day_seqs = np.stack(bucket['seqs']).astype(np.float32, copy=False)
+        day_targets = np.asarray(bucket['targets'], dtype=np.float32)
+        day_vol_targets = np.asarray(bucket['vol_targets'], dtype=np.float32)
+        day_stocks = list(bucket['stock_codes'])
+
+        threshold_2pct = np.quantile(day_targets, 0.98)
+        relevance = (day_targets >= threshold_2pct).astype(np.float32)
+
+        sequences.append(day_seqs)
+        targets.append(day_targets)
+        vol_targets.append(day_vol_targets)
+        relevance_scores.append(relevance)
+        stock_indices.append(day_stocks)
+
+    return sequences, targets, relevance_scores, stock_indices, vol_targets
+
 def create_ranking_dataset_vectorized(
     data,
     features,
@@ -1072,7 +1119,14 @@ def create_ranking_dataset_vectorized(
     # 也就是说，保留下来的每一行都已经满足
     # T+1 开盘买入到 T+5 开盘卖出的收益率可计算，
     # 这里不应再额外要求未来 5 个交易日，否则会重复缩短样本。
-    all_windows = []  # 每个元素: (end_date, stock_code, sequence, target, vol_target)
+    window_buckets = defaultdict(
+        lambda: {
+            'seqs': [],
+            'targets': [],
+            'vol_targets': [],
+            'stock_codes': [],
+        }
+    )
 
     print("Step 1: 为每只股票生成滑动窗口...")
     grouped = data.groupby('instrument')
@@ -1098,52 +1152,21 @@ def create_ranking_dataset_vectorized(
             seq = feature_values[i : i + sequence_length]   # (L, F)
             target = labels[end_idx]                        # label 对应窗口最后一天的次日涨跌幅
             vol_target = vol_labels[end_idx]                # 波动率辅助标签
-            end_date = dates[end_idx]                       # 窗口结束日期（即预测日）
-            all_windows.append((end_date, stock_code, seq, target, vol_target))
+            end_date = pd.Timestamp(dates[end_idx])         # 窗口结束日期（即预测日）
+            bucket = window_buckets[end_date]
+            bucket['seqs'].append(seq)
+            bucket['targets'].append(target)
+            bucket['vol_targets'].append(vol_target)
+            bucket['stock_codes'].append(stock_code)
 
-    # 4. 转为 DataFrame 便于按日期聚合
+    # 4. 按日期聚合窗口，构建每日样本
     print("Step 2: 按日期聚合窗口...")
-    window_df = pd.DataFrame(all_windows, columns=['date', 'stock_code', 'seq', 'target', 'vol_target'])
-
-    # 5. 按 date 分组，构建每日样本
-    sequences = []
-    targets = []
-    vol_targets = []
-    relevance_scores = []
-    stock_indices = []
-
     print("Step 3: 构建每日样本并计算 relevance...")
-    grouped_by_date = window_df.groupby('date')
-
-    if min_window_end_date is not None:
-        min_window_end_date = pd.to_datetime(min_window_end_date)
-    if max_window_end_date is not None:
-        max_window_end_date = pd.to_datetime(max_window_end_date)
-    
-    for date, group in tqdm(grouped_by_date, desc="Aggregating by date"):
-        if min_window_end_date is not None and pd.to_datetime(date) < min_window_end_date:
-            continue
-        if max_window_end_date is not None and pd.to_datetime(date) > max_window_end_date:
-            continue
-
-        if len(group) < 10:
-            continue
-        
-        # 提取数据
-        day_seqs = np.stack(group['seq'].values)          # (N, L, F)
-        day_targets = group['target'].values              # (N,)
-        day_vol_targets = group['vol_target'].values      # (N,)
-        day_stocks = group['stock_code'].tolist()         # [str]
-
-        # 计算 relevance（新逻辑：是否属于全市场前 2% 的妖股）
-        threshold_2pct = np.quantile(day_targets, 0.98)
-        relevance = (day_targets >= threshold_2pct).astype(np.float32)
-
-        sequences.append(day_seqs)
-        targets.append(day_targets)
-        vol_targets.append(day_vol_targets)
-        relevance_scores.append(relevance)
-        stock_indices.append(day_stocks)
+    sequences, targets, relevance_scores, stock_indices, vol_targets = _aggregate_ranking_windows_by_date(
+        window_buckets,
+        min_window_end_date=min_window_end_date,
+        max_window_end_date=max_window_end_date,
+    )
 
     print(f"成功创建 {len(sequences)} 个训练样本")
     if len(sequences) > 0:
