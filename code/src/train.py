@@ -5,14 +5,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from functools import lru_cache
+from functools import partial
 from tqdm import tqdm
 from tensorboardX import SummaryWriter
 from config import config
-from factor_store import apply_factor_expressions
-from factor_store import engineer_group_features
 from factor_store import resolve_factor_pipeline
 from factor_store import save_factor_snapshot
-from model import StockTransformer
 from data_manager import collect_data_sources
 from data_manager import load_market_dataset
 from data_manager import load_market_dataset_from_path
@@ -26,12 +24,16 @@ from experiments.metrics import format_strategy_metric_summary as format_strateg
 from experiments.runner import build_strategy_export_payload
 from experiments.runner import summarize_experiment_run
 from experiments.splits import build_rolling_validation_folds as build_rolling_validation_folds_shared
+from features.feature_assembler import augment_feature_table
+from features.feature_assembler import build_feature_table
 from graph.correlation_graph import build_correlation_prior_adjacency
 from graph.graph_builder import build_prior_graph_adjacency as build_prior_graph_adjacency_shared
 from graph.industry_graph import build_industry_prior_adjacency
 from graph.industry_graph import build_stock_industry_index as build_stock_industry_index_shared
-from utils import apply_cross_sectional_normalization
-from utils import augment_engineered_features
+from models.rank_model import StockTransformer
+from objectives.ranking_loss import PortfolioOptimizationLoss
+from objectives.target_transforms import rank_normalize_tensor as _tensor_rank_normalize
+from objectives.target_transforms import transform_targets_for_loss
 from utils import create_ranking_dataset_vectorized
 from utils import resolve_feature_indices
 import joblib
@@ -388,13 +390,7 @@ def _build_label_and_clean(processed, drop_small_open=True):
 
 def _preprocess_common(df, stockid2idx, desc, feature_pipeline, drop_small_open=True):
     assert stockid2idx is not None, "stockid2idx 不能为空"
-    feature_columns = feature_pipeline['active_features']
-    time_series_specs = feature_pipeline.get('time_series_specs')
-    if time_series_specs is None:
-        legacy_specs = [spec for spec in feature_pipeline.get('builtin_override_specs', []) if spec.get('overridden')]
-        legacy_specs.extend(feature_pipeline.get('custom_specs', []))
-        time_series_specs = legacy_specs
-    cross_sectional_specs = feature_pipeline.get('cross_sectional_specs', [])
+    feature_columns = list(feature_pipeline['active_features'])
 
     # 保证时序正确，避免 shift 标签错位
     df = df.copy()
@@ -406,22 +402,26 @@ def _preprocess_common(df, stockid2idx, desc, feature_pipeline, drop_small_open=
         raise ValueError(f"{desc}输入为空，无法继续")
 
     num_processes = min(int(config.get('feature_engineer_processes', 4)), mp.cpu_count())
+    feature_builder = partial(
+        build_feature_table,
+        feature_set=feature_pipeline['feature_set'],
+        runtime_config=config,
+        feature_pipeline=feature_pipeline,
+    )
     with mp.Pool(processes=num_processes) as pool:
-        tasks = [
-            (group, feature_pipeline['feature_set'], time_series_specs)
-            for group in groups
-        ]
-        processed_list = list(tqdm(pool.imap(engineer_group_features, tasks), total=len(groups), desc=desc))
+        processed_list = list(tqdm(pool.imap(feature_builder, groups), total=len(groups), desc=desc))
 
     processed = pd.concat(processed_list).reset_index(drop=True)
-    if cross_sectional_specs:
-        processed = processed.sort_values(['日期', '股票代码']).reset_index(drop=True)
-        processed = apply_factor_expressions(
-            processed,
-            cross_sectional_specs,
-            error_prefix='截面因子',
-            date_col='日期',
-        )
+    processed, feature_columns = augment_feature_table(
+        processed,
+        feature_columns,
+        runtime_config=config,
+        feature_pipeline=feature_pipeline,
+        date_col='日期',
+        stock_col='股票代码',
+        apply_feature_enhancements=False,
+        apply_cross_sectional_norm=False,
+    )
 
     # 映射股票索引，并剔除映射失败样本
     processed['instrument'] = processed['股票代码'].map(stockid2idx)
@@ -429,25 +429,17 @@ def _preprocess_common(df, stockid2idx, desc, feature_pipeline, drop_small_open=
     processed['instrument'] = processed['instrument'].astype(np.int64)
 
     processed = _build_label_and_clean(processed, drop_small_open=drop_small_open)
-    if bool(config.get('use_feature_enhancements', True)):
-        processed, feature_columns = augment_engineered_features(
-            processed,
-            feature_columns,
-            config=config,
-            date_col='日期',
-            stock_col='股票代码',
-        )
-
-    if config.get('use_cross_sectional_feature_norm', True):
-        cs_exclude = [col for col in feature_columns if col.startswith('market_')]
-        processed = apply_cross_sectional_normalization(
-            processed,
-            feature_columns,
-            date_col='日期',
-            method=config.get('feature_cs_norm_method', 'zscore'),
-            clip_value=config.get('feature_cs_clip_value', None),
-            exclude_columns=cs_exclude,
-        )
+    processed, feature_columns = augment_feature_table(
+        processed,
+        feature_columns,
+        runtime_config=config,
+        feature_pipeline=None,
+        date_col='日期',
+        stock_col='股票代码',
+        apply_factor_pipeline=False,
+        apply_feature_enhancements=True,
+        apply_cross_sectional_norm=True,
+    )
     return processed, feature_columns
 
 
@@ -463,221 +455,7 @@ def preprocess_val_data(df, feature_pipeline, stockid2idx=None):
     return _preprocess_common(df, stockid2idx, desc="验证集特征工程", feature_pipeline=feature_pipeline, drop_small_open=True)
 
 
-# 加权的组合收益排序损失函数
-class PortfolioOptimizationLoss(nn.Module):
-    """
-    混合损失：
-    - ListNet：全局分布对齐；
-    - Pairwise RankNet：强化头部排序；
-    - LambdaNDCG：直接逼近 Top-K 排序目标。
-    - IC 正则：提升预测分数与真实收益的全局相关性。
-    """
-    def __init__(
-        self,
-        temperature=10.0,
-        listnet_weight=1.0,
-        pairwise_weight=1.0,
-        lambda_ndcg_weight=1.0,
-        lambda_ndcg_topk=50,
-        ic_weight=0.0,
-        ic_mode='pearson',
-    ):
-        super(PortfolioOptimizationLoss, self).__init__()
-        self.temperature = float(temperature)
-        self.listnet_weight = float(listnet_weight)
-        self.pairwise_weight = float(pairwise_weight)
-        self.lambda_ndcg_weight = float(lambda_ndcg_weight)
-        self.lambda_ndcg_topk = int(lambda_ndcg_topk)
-        self.ic_weight = float(ic_weight)
-        self.ic_mode = str(ic_mode).lower()
-
-    def _pairwise_ranknet_loss(self, y_pred, y_true):
-        n = y_true.numel()
-        if n <= 1:
-            return y_pred.new_zeros(())
-
-        top_fraction = float(config.get('pairwise_top_fraction', 0.1))
-        k = max(1, int(n * top_fraction))
-        _, top_true_indices = torch.topk(y_true, k)
-
-        y_pred_top = y_pred[top_true_indices]
-        y_true_top = y_true[top_true_indices]
-
-        pred_diff = y_pred_top.unsqueeze(1) - y_pred.unsqueeze(0)
-        true_diff = y_true_top.unsqueeze(1) - y_true.unsqueeze(0)
-        mask = (true_diff > 0).float()
-        return (F.softplus(-pred_diff) * mask * true_diff.abs()).sum() / (mask.sum() + 1e-8)
-
-    def _lambda_ndcg_loss(self, y_pred, y_true):
-        n = y_true.numel()
-        if n <= 1:
-            return y_pred.new_zeros(())
-
-        # gain 归一化，避免量纲影响
-        gains = y_true - torch.min(y_true)
-        gains = gains / (torch.max(gains) + 1e-8)
-
-        ideal_order = torch.argsort(gains, descending=True)
-        discounts = 1.0 / torch.log2(torch.arange(n, device=y_true.device, dtype=torch.float32) + 2.0)
-        ideal_dcg = torch.sum(gains[ideal_order] * discounts) + 1e-8
-
-        pred_order = torch.argsort(y_pred, descending=True)
-        pred_pos = torch.empty_like(pred_order)
-        pred_pos[pred_order] = torch.arange(n, device=y_true.device)
-        pred_discounts = 1.0 / torch.log2(pred_pos.float() + 2.0)
-
-        gain_diff = gains.unsqueeze(1) - gains.unsqueeze(0)
-        discount_diff = pred_discounts.unsqueeze(1) - pred_discounts.unsqueeze(0)
-        delta_ndcg = torch.abs(gain_diff * discount_diff) / ideal_dcg
-
-        pred_diff = y_pred.unsqueeze(1) - y_pred.unsqueeze(0)
-        true_diff = y_true.unsqueeze(1) - y_true.unsqueeze(0)
-        pair_mask = true_diff > 0
-
-        if self.lambda_ndcg_topk > 0:
-            topk = min(self.lambda_ndcg_topk, n)
-            _, top_idx = torch.topk(y_true, topk)
-            top_mask = torch.zeros(n, dtype=torch.bool, device=y_true.device)
-            top_mask[top_idx] = True
-            pair_mask = pair_mask & top_mask.unsqueeze(1)
-
-        if pair_mask.sum() == 0:
-            return y_pred.new_zeros(())
-
-        weighted_pair_loss = F.softplus(-pred_diff) * delta_ndcg
-        return weighted_pair_loss[pair_mask].mean()
-
-    def _pearson_corr(self, x, y):
-        if x.numel() <= 1:
-            return x.new_zeros(())
-        x_centered = x - x.mean()
-        y_centered = y - y.mean()
-        x_std = torch.sqrt((x_centered ** 2).mean() + 1e-12)
-        y_std = torch.sqrt((y_centered ** 2).mean() + 1e-12)
-        corr = (x_centered * y_centered).mean() / (x_std * y_std + 1e-12)
-        return torch.clamp(corr, min=-1.0, max=1.0)
-
-    def _rankize(self, values):
-        n = values.numel()
-        if n <= 1:
-            return values.new_zeros(values.shape)
-        order = torch.argsort(values)
-        ranks = torch.empty_like(values, dtype=torch.float32)
-        ranks[order] = torch.arange(n, device=values.device, dtype=torch.float32)
-        return ranks
-
-    def _ic_regularization_loss(self, y_pred, y_true):
-        if self.ic_weight <= 0.0:
-            return y_pred.new_zeros(())
-        if self.ic_mode == 'pearson':
-            corr = self._pearson_corr(y_pred, y_true)
-        elif self.ic_mode in {'spearman', 'rank'}:
-            corr = self._pearson_corr(self._rankize(y_pred), self._rankize(y_true))
-        else:
-            raise ValueError(f'不支持的 ic_mode: {self.ic_mode}')
-        # 与建议一致：最小化 -corr，等价于最大化 corr。
-        return -corr
-
-    def forward(self, y_pred, y_true):
-        """
-        y_pred: [1, num_items]
-        y_true: [1, num_items] (训练用目标，已按配置做截面归一化/极值处理)
-        """
-        p_true = F.softmax(y_true * self.temperature, dim=1)
-        p_pred = F.log_softmax(y_pred, dim=1)
-        listnet_loss = -torch.sum(p_true * p_pred, dim=1).mean()
-
-        y_pred_flat = y_pred.squeeze(0)
-        y_true_flat = y_true.squeeze(0)
-        pairwise_loss = self._pairwise_ranknet_loss(y_pred_flat, y_true_flat)
-        lambda_ndcg_loss = self._lambda_ndcg_loss(y_pred_flat, y_true_flat)
-        ic_loss = self._ic_regularization_loss(y_pred_flat, y_true_flat)
-
-        return (
-            self.listnet_weight * listnet_loss
-            + self.pairwise_weight * pairwise_loss
-            + self.lambda_ndcg_weight * lambda_ndcg_loss
-            + self.ic_weight * ic_loss
-        )
-
-
-def _tensor_rank_normalize(values):
-    n = values.numel()
-    if n <= 1:
-        return torch.zeros_like(values)
-    order = torch.argsort(values)
-    ranks = torch.empty_like(order, dtype=torch.float32)
-    ranks[order] = torch.arange(n, device=values.device, dtype=torch.float32)
-    return (ranks / max(n - 1, 1)) * 2.0 - 1.0
-
-
-def _tensor_mad_bounds(values, mad_n=5.0, mad_min_scale=1e-6):
-    median = torch.median(values)
-    mad = torch.median(torch.abs(values - median))
-    robust_sigma = torch.clamp(mad * 1.4826, min=float(mad_min_scale))
-    lower = median - float(mad_n) * robust_sigma
-    upper = median + float(mad_n) * robust_sigma
-    return lower, upper
-
-
-def transform_targets_for_loss(valid_pred, valid_target):
-    """
-    为损失函数准备训练目标：
-    1) 极值样本 drop / clip；
-    2) 截面标准化（zscore/rank）。
-    """
-    mode = str(config.get('label_extreme_mode', 'none')).lower()
-    lower_q = float(config.get('label_extreme_lower_quantile', 0.05))
-    upper_q = float(config.get('label_extreme_upper_quantile', 0.95))
-    lower_q = max(0.0, min(lower_q, 0.49))
-    upper_q = min(1.0, max(upper_q, 0.51))
-    mad_n = float(config.get('label_mad_clip_n', 5.0))
-    mad_min_scale = float(config.get('label_mad_min_scale', 1e-6))
-
-    pred = valid_pred
-    target = valid_target
-
-    if mode in {'mad_drop', 'mad_drop_clip'} and target.numel() > 5:
-        lower, upper = _tensor_mad_bounds(target, mad_n=mad_n, mad_min_scale=mad_min_scale)
-        keep_mask = (target >= lower) & (target <= upper)
-        if int(keep_mask.sum().item()) >= 2:
-            pred = pred[keep_mask]
-            target = target[keep_mask]
-
-    if mode in {'mad_clip', 'mad_drop_clip'} and target.numel() > 2:
-        lower, upper = _tensor_mad_bounds(target, mad_n=mad_n, mad_min_scale=mad_min_scale)
-        target = torch.clamp(target, min=lower, max=upper)
-
-    if mode in {'drop', 'drop_clip'} and target.numel() > 5:
-        lower = torch.quantile(target, lower_q)
-        upper = torch.quantile(target, upper_q)
-        keep_mask = (target >= lower) & (target <= upper)
-        if int(keep_mask.sum().item()) >= 2:
-            pred = pred[keep_mask]
-            target = target[keep_mask]
-
-    if mode in {'clip', 'drop_clip'} and target.numel() > 2:
-        lower = torch.quantile(target, lower_q)
-        upper = torch.quantile(target, upper_q)
-        target = torch.clamp(target, min=lower, max=upper)
-
-    if config.get('use_cross_sectional_label_norm', True):
-        label_norm_method = str(config.get('label_cs_norm_method', 'zscore')).lower()
-        if label_norm_method == 'zscore':
-            mean = target.mean()
-            std = target.std(unbiased=False)
-            target = (target - mean) / (std + 1e-6)
-        elif label_norm_method == 'rank':
-            target = _tensor_rank_normalize(target)
-        else:
-            raise ValueError(f'不支持的 label_cs_norm_method: {label_norm_method}')
-
-        clip_value = config.get('label_cs_clip_value', None)
-        if clip_value is not None:
-            clip_value = float(clip_value)
-            target = torch.clamp(target, min=-clip_value, max=clip_value)
-
-    return pred, target
+# 排序损失与目标变换已收敛到 objectives/*，训练脚本只保留编排逻辑。
 
 
 def _rank_ic(valid_pred, valid_true_return):

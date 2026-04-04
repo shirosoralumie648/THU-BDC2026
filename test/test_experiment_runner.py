@@ -11,9 +11,11 @@ if SRC_ROOT not in sys.path:
     sys.path.insert(0, SRC_ROOT)
 
 from experiments.ensemble import summarize_multi_seed_runs
+from experiments.metrics import build_strategy_candidates as build_strategy_candidates_shared
 from experiments.runner import build_strategy_export_payload
 from experiments.runner import summarize_experiment_run
 from experiments.splits import build_rolling_validation_folds
+import reselect_strategy
 
 
 class RollingValidationSplitTests(unittest.TestCase):
@@ -208,6 +210,52 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertEqual(payload['validation_fold_diagnostics'][1]['start_date'], '2024-02-08')
         self.assertEqual(payload['validation_regime_summary']['best_candidate_win_counts']['equal_top2'], 1)
         self.assertEqual(payload['validation_regime_summary']['best_candidate_win_counts']['softmax_top2'], 1)
+
+    def test_reselect_strategy_builds_payload_via_shared_experiment_contract(self):
+        eval_metrics = {
+            'return_equal_top2': 0.08,
+            'return_equal_top2_std': 0.02,
+            'return_equal_top2_risk_adjusted': 0.06,
+            'return_softmax_top2': 0.09,
+            'return_softmax_top2_std': 0.05,
+            'return_softmax_top2_risk_adjusted': 0.04,
+            'rank_ic_mean': 0.12,
+            'rank_ic_ir': 0.8,
+        }
+        run_summary = summarize_experiment_run(
+            eval_loss=0.30,
+            eval_metrics=eval_metrics,
+            fold_results=[],
+            strategy_candidates=self.strategy_candidates,
+            runtime_config=self.runtime_config,
+        )
+        validation_folds = [
+            {
+                'name': 'fold_1',
+                'start_date': pd.Timestamp('2024-02-01'),
+                'end_date': pd.Timestamp('2024-02-05'),
+                'purge_days': 3,
+                'embargo_days': 2,
+                'label_horizon': 5,
+            },
+        ]
+
+        payload = reselect_strategy.build_reselected_strategy_payload(
+            run_summary=run_summary,
+            validation_folds=validation_folds,
+            runtime_config=self.runtime_config,
+            reselected_at='2026-04-04 12:00:00',
+        )
+
+        self.assertEqual(payload['source'], 'validation_reselect')
+        self.assertEqual(payload['reselected_at'], '2026-04-04 12:00:00')
+        self.assertNotIn('generated_at', payload)
+        self.assertEqual(payload['validation_folds'][0]['name'], 'fold_1')
+
+    def test_reselect_strategy_uses_shared_experiment_helpers(self):
+        self.assertIs(reselect_strategy.build_strategy_candidates_shared, build_strategy_candidates_shared)
+        self.assertIs(reselect_strategy.build_strategy_export_payload, build_strategy_export_payload)
+        self.assertIs(reselect_strategy.summarize_experiment_run, summarize_experiment_run)
 
     def test_summarize_multi_seed_runs_aggregates_metrics_and_selects_best_run(self):
         run_summaries = [
