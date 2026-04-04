@@ -57,12 +57,13 @@ class RankingDatasetVectorizedTests(unittest.TestCase):
         for stock_idx in range(10):
             instrument = f'{stock_idx:06d}'
             for day_idx, trade_date in enumerate(dates):
+                label = float(day_idx * 100 + stock_idx)
                 rows.append(
                     {
                         'instrument': instrument,
                         '日期': trade_date.strftime('%Y-%m-%d'),
-                        'label': float(stock_idx),
-                        'vol_label': float(stock_idx) / 10.0,
+                        'label': label,
+                        'vol_label': label / 10.0,
                         'feat_a': float(day_idx + stock_idx / 100.0),
                         'feat_b': float((day_idx + 1) * 2 + stock_idx / 100.0),
                     }
@@ -74,15 +75,33 @@ class RankingDatasetVectorizedTests(unittest.TestCase):
             ['feat_a', 'feat_b'],
             sequence_length=2,
             min_window_end_date=dates[1],
-            max_window_end_date=dates[1],
+            max_window_end_date=dates[2],
         )
 
-        self.assertEqual(len(sequences), 1)
+        self.assertEqual(len(sequences), 2)
         self.assertEqual(sequences[0].shape, (10, 2, 2))
+        self.assertEqual(sequences[1].shape, (10, 2, 2))
         self.assertEqual(len(targets[0]), 10)
+        self.assertEqual(len(targets[1]), 10)
         self.assertEqual(len(vol_targets[0]), 10)
+        self.assertEqual(len(vol_targets[1]), 10)
         self.assertEqual(len(stock_indices[0]), 10)
+        self.assertEqual(len(stock_indices[1]), 10)
+        expected_stock_order = [f'{stock_idx:06d}' for stock_idx in range(10)]
+        self.assertEqual(stock_indices[0], expected_stock_order)
+        self.assertEqual(stock_indices[1], expected_stock_order)
+        np.testing.assert_allclose(targets[0], np.arange(100.0, 110.0, dtype=np.float32))
+        np.testing.assert_allclose(targets[1], np.arange(200.0, 210.0, dtype=np.float32))
+        np.testing.assert_allclose(
+            vol_targets[0],
+            np.asarray([10.0 + idx / 10.0 for idx in range(10)], dtype=np.float32),
+        )
+        np.testing.assert_allclose(
+            vol_targets[1],
+            np.asarray([20.0 + idx / 10.0 for idx in range(10)], dtype=np.float32),
+        )
         self.assertEqual(int(np.sum(relevance_scores[0])), 1)
+        self.assertEqual(int(np.sum(relevance_scores[1])), 1)
 
 
 if __name__ == '__main__':
