@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -202,6 +203,37 @@ class FactorStoreEngineTests(unittest.TestCase):
             self.assertEqual(mocked.call_count, 1)
             self.assertEqual(first['factor_fingerprint'], second['factor_fingerprint'])
             self.assertEqual(first['active_features'], second['active_features'])
+
+    def test_importing_factor_store_does_not_eagerly_import_utils(self):
+        script = f"""
+import sys
+sys.path.insert(0, {SRC_ROOT!r})
+
+class _BlockUtilsFinder:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'utils':
+            raise RuntimeError('utils imported eagerly')
+        return None
+
+sys.meta_path.insert(0, _BlockUtilsFinder())
+import factor_store
+print('factor_store imported')
+"""
+
+        completed = subprocess.run(
+            [sys.executable, '-c', script],
+            cwd=PROJECT_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(
+            completed.returncode,
+            0,
+            msg=(completed.stderr or completed.stdout).strip(),
+        )
+        self.assertIn('factor_store imported', completed.stdout)
 
 
 if __name__ == '__main__':

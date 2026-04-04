@@ -12,18 +12,12 @@ from functools import lru_cache
 import numpy as np
 import pandas as pd
 
-from utils import engineer_features_39, engineer_features_158plus39
-
-
 FACTOR_STORE_VERSION = 1
 DEFAULT_BUILTIN_FACTOR_REGISTRY_PATH = os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..', '..', 'config', 'builtin_factors.json')
 )
 
-FEATURE_ENGINEER_FUNC_MAP = {
-    '39': engineer_features_39,
-    '158+39': engineer_features_158plus39,
-}
+SUPPORTED_FEATURE_SETS = ('39', '158+39')
 
 IDENTIFIER_PATTERN = re.compile(r'[A-Za-z_\u4e00-\u9fff][0-9A-Za-z_\u4e00-\u9fff]*')
 SAFE_NUMPY_CALLS = {
@@ -108,7 +102,7 @@ def load_builtin_factor_registry(registry_path):
 def get_builtin_specs_map(registry_path=DEFAULT_BUILTIN_FACTOR_REGISTRY_PATH):
     registry = load_builtin_factor_registry(registry_path)
     feature_sets = registry.get('feature_sets', {})
-    for feature_set in FEATURE_ENGINEER_FUNC_MAP:
+    for feature_set in SUPPORTED_FEATURE_SETS:
         if feature_set not in feature_sets:
             raise ValueError(f'内置因子注册表缺少 feature_set: {feature_set}')
     return feature_sets
@@ -130,7 +124,7 @@ def load_factor_store(store_path):
         )
 
     feature_sets = store.setdefault('feature_sets', {})
-    for feature_set in FEATURE_ENGINEER_FUNC_MAP:
+    for feature_set in SUPPORTED_FEATURE_SETS:
         feature_set_config = feature_sets.setdefault(
             feature_set, copy.deepcopy(_default_feature_set_config())
         )
@@ -147,11 +141,24 @@ def save_factor_store(store, store_path):
 
 
 def _get_feature_set_config(store, feature_set):
-    if feature_set not in FEATURE_ENGINEER_FUNC_MAP:
+    if feature_set not in SUPPORTED_FEATURE_SETS:
         raise ValueError(f'不支持的 feature_set: {feature_set}')
     return store.setdefault('feature_sets', {}).setdefault(
         feature_set, copy.deepcopy(_default_feature_set_config())
     )
+
+
+@lru_cache(maxsize=None)
+def _get_feature_engineer(feature_set):
+    if feature_set not in SUPPORTED_FEATURE_SETS:
+        raise ValueError(f'不支持的 feature_set: {feature_set}')
+
+    from utils import engineer_features_39
+    from utils import engineer_features_158plus39
+
+    if feature_set == '39':
+        return engineer_features_39
+    return engineer_features_158plus39
 
 
 def _build_builtin_specs(feature_set, disabled_builtin_factors):
@@ -274,7 +281,7 @@ def _resolve_factor_pipeline_cached(
     registry_mtime_ns,
     registry_size,
 ):
-    if feature_set not in FEATURE_ENGINEER_FUNC_MAP:
+    if feature_set not in SUPPORTED_FEATURE_SETS:
         raise ValueError(f'不支持的 feature_set: {feature_set}')
 
     store = load_factor_store(store_path)
@@ -308,7 +315,7 @@ def _resolve_factor_pipeline_cached(
         'feature_set': feature_set,
         'store_path': store_path,
         'builtin_registry_path': os.path.abspath(builtin_registry_path),
-        'engineer': FEATURE_ENGINEER_FUNC_MAP[feature_set],
+        'engineer': _get_feature_engineer(feature_set),
         'builtin_specs': builtin_specs,
         'builtin_override_specs': [spec for spec in builtin_specs if spec.get('overridden')],
         'custom_specs': custom_specs,
@@ -1422,7 +1429,7 @@ def engineer_group_features(task):
     else:
         raise ValueError('engineer_group_features 任务参数不合法')
 
-    engineer = FEATURE_ENGINEER_FUNC_MAP[feature_set]
+    engineer = _get_feature_engineer(feature_set)
     processed = engineer(group.copy())
     factor_specs = [spec for spec in factor_specs if not spec.get('is_cross_sectional')]
     processed = apply_factor_expressions(
@@ -1762,7 +1769,7 @@ def load_factor_snapshot(snapshot_path):
         snapshot = json.load(f)
 
     feature_set = snapshot['feature_set']
-    if feature_set not in FEATURE_ENGINEER_FUNC_MAP:
+    if feature_set not in SUPPORTED_FEATURE_SETS:
         raise ValueError(f'快照中的 feature_set 不支持: {feature_set}')
 
     builtin_specs = [dict(spec) for spec in snapshot.get('builtin_specs', [])]
@@ -1797,7 +1804,7 @@ def load_factor_snapshot(snapshot_path):
         'feature_set': feature_set,
         'store_path': snapshot.get('store_path', ''),
         'builtin_registry_path': snapshot.get('builtin_registry_path', DEFAULT_BUILTIN_FACTOR_REGISTRY_PATH),
-        'engineer': FEATURE_ENGINEER_FUNC_MAP[feature_set],
+        'engineer': _get_feature_engineer(feature_set),
         'builtin_specs': builtin_specs,
         'builtin_override_specs': [spec for spec in builtin_specs if spec.get('overridden')],
         'custom_specs': custom_specs,
