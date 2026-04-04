@@ -32,6 +32,10 @@ def _load_json_payload(path: str):
     return copy.deepcopy(payload)
 
 
+def _snapshot_error(code: str, message: str) -> Dict[str, str]:
+    return {'code': code, 'message': message}
+
+
 def infer_existing_column(df: pd.DataFrame, candidates: Iterable[str]) -> Optional[str]:
     for col in candidates:
         if col in df.columns:
@@ -644,9 +648,10 @@ def inspect_csv_metadata(
     try:
         df = pd.read_csv(path)
     except Exception as exc:
-        return {'error': f'csv_parse_error: {exc}'}
+        return {'status': 'error', 'error_code': 'csv_parse_error', 'message': str(exc)}
 
     info = {
+        'status': 'ok',
         'row_count': int(len(df)),
         'column_count': int(len(df.columns)),
     }
@@ -687,10 +692,11 @@ def build_file_snapshot(
     if not exists:
         return snapshot
 
+    errors = []
     try:
         snapshot['size_bytes'] = int(os.path.getsize(abs_path))
-    except Exception:
-        pass
+    except Exception as exc:
+        errors.append(_snapshot_error('stat_failed', str(exc)))
 
     if inspect_csv and abs_path.lower().endswith('.csv'):
         csv_meta = inspect_csv_metadata(
@@ -700,6 +706,16 @@ def build_file_snapshot(
         )
         if csv_meta:
             snapshot['csv'] = csv_meta
+            if csv_meta.get('status') == 'error':
+                errors.append(
+                    _snapshot_error(
+                        str(csv_meta.get('error_code', 'csv_parse_error')),
+                        str(csv_meta.get('message', 'unknown csv parse error')),
+                    )
+                )
+
+    if errors:
+        snapshot['errors'] = errors
     return snapshot
 
 

@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -13,6 +14,8 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 SRC_ROOT = os.path.join(PROJECT_ROOT, 'code', 'src')
 if SRC_ROOT not in sys.path:
     sys.path.insert(0, SRC_ROOT)
+
+from data_manager import build_file_snapshot
 
 from ingestion.manifests import build_ingestion_manifest
 from ingestion.models import IngestionJob
@@ -295,6 +298,34 @@ class ManifestContractTests(unittest.TestCase):
             self.assertEqual(manifest['train_csv']['exists'], True)
             self.assertEqual(manifest['test_csv']['exists'], True)
             self.assertEqual(manifest['stock_data_csv']['exists'], True)
+
+    def test_build_file_snapshot_records_structured_csv_parse_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_csv = Path(tmp) / 'bad.csv'
+            bad_csv.write_text('股票代码,日期\n"unterminated,2024-01-02\n', encoding='utf-8')
+
+            snapshot = build_file_snapshot(str(bad_csv), inspect_csv=True)
+
+            self.assertEqual(snapshot['path'], str(bad_csv.resolve()))
+            self.assertTrue(snapshot['exists'])
+            self.assertIn('csv', snapshot)
+            self.assertEqual(snapshot['csv']['status'], 'error')
+            self.assertEqual(snapshot['csv']['error_code'], 'csv_parse_error')
+            self.assertIn('errors', snapshot)
+            self.assertEqual(snapshot['errors'][0]['code'], 'csv_parse_error')
+
+    def test_build_file_snapshot_records_stat_failure_without_hiding_existing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = Path(tmp) / 'good.csv'
+            csv_path.write_text('股票代码,日期\n000001.SZ,2024-01-02\n', encoding='utf-8')
+            with patch('data_manager.os.path.getsize', side_effect=OSError('stat boom')):
+                snapshot = build_file_snapshot(str(csv_path), inspect_csv=False)
+
+        self.assertTrue(snapshot['exists'])
+        self.assertNotIn('size_bytes', snapshot)
+        self.assertIn('errors', snapshot)
+        self.assertEqual(snapshot['errors'][0]['code'], 'stat_failed')
+        self.assertIn('stat boom', snapshot['errors'][0]['message'])
 
 
 if __name__ == '__main__':
