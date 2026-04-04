@@ -1,9 +1,11 @@
 import argparse
+import copy
 import json
 import os
 import sys
 from datetime import datetime
 from datetime import timezone
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -434,6 +436,24 @@ def _finalize_output_frame(df: pd.DataFrame) -> pd.DataFrame:
     return out[ordered + remain]
 
 
+def _file_signature(path: str) -> tuple[str, int, int]:
+    abs_path = os.path.abspath(str(path))
+    stat = os.stat(abs_path)
+    return abs_path, int(stat.st_mtime_ns), int(stat.st_size)
+
+
+@lru_cache(maxsize=128)
+def _load_json_payload_cached(path: str, mtime_ns: int, size_bytes: int):
+    with open(path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def _load_json_payload(path: str):
+    abs_path, mtime_ns, size_bytes = _file_signature(path)
+    payload = _load_json_payload_cached(abs_path, mtime_ns, size_bytes)
+    return copy.deepcopy(payload)
+
+
 def _extract_factor_fingerprint_from_manifest(
     manifest_path: str,
     *,
@@ -441,8 +461,7 @@ def _extract_factor_fingerprint_from_manifest(
     feature_set_version: str,
 ) -> str:
     try:
-        with open(manifest_path, 'r', encoding='utf-8') as f:
-            payload = json.load(f)
+        payload = _load_json_payload(manifest_path)
     except Exception:
         return ''
     if not isinstance(payload, dict):

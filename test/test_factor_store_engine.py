@@ -1,6 +1,10 @@
+import json
 import os
 import sys
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -11,9 +15,11 @@ SRC_ROOT = os.path.join(PROJECT_ROOT, 'code', 'src')
 if SRC_ROOT not in sys.path:
     sys.path.insert(0, SRC_ROOT)
 
+import factor_store as factor_store_module
 from factor_store import apply_factor_expressions
 from factor_store import build_factor_execution_plan
 from factor_store import build_factor_snapshot
+from factor_store import resolve_factor_pipeline
 
 
 class FactorStoreEngineTests(unittest.TestCase):
@@ -64,6 +70,25 @@ class FactorStoreEngineTests(unittest.TestCase):
         out = apply_factor_expressions(df, specs, error_prefix='测试因子')
         expected = df['收盘'].rolling(2).mean().fillna(0.0).to_numpy(dtype=np.float32)
         np.testing.assert_allclose(out['my_custom_sma'].to_numpy(), expected)
+
+    def test_build_factor_execution_plan_reuses_cached_compile_for_identical_specs(self):
+        specs = [
+            {'name': 'ret_1', 'expression': 'pct_change(收盘, 1)'},
+            {'name': 'ret_1_rank', 'expression': 'cs_rank(ret_1)'},
+        ]
+
+        with patch(
+            'factor_store._compile_expression',
+            wraps=factor_store_module._compile_expression,
+        ) as mocked:
+            first = build_factor_execution_plan(specs, error_prefix='测试因子')
+            second = build_factor_execution_plan(specs, error_prefix='测试因子')
+
+        self.assertEqual(mocked.call_count, 2)
+        self.assertEqual(
+            [spec['name'] for spec in first['ordered_specs']],
+            [spec['name'] for spec in second['ordered_specs']],
+        )
 
     def test_cross_sectional_factor_plan_and_compute(self):
         df = self._base_df().sort_values(['股票代码', '日期']).reset_index(drop=True)
@@ -125,6 +150,58 @@ class FactorStoreEngineTests(unittest.TestCase):
         self.assertIn('snapshot', snapshot)
         self.assertIn('created_at', snapshot['snapshot'])
         self.assertEqual(snapshot['snapshot']['factor_fingerprint'], snapshot['factor_fingerprint'])
+
+    def test_resolve_factor_pipeline_reuses_cached_execution_plan_for_same_inputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            registry_path = tmp_path / 'builtin_factors.json'
+            store_path = tmp_path / 'factor_store.json'
+
+            registry_path.write_text(
+                json.dumps(
+                    {
+                        'feature_sets': {
+                            '39': [
+                                {
+                                    'name': 'f_close_copy',
+                                    'group': 'price',
+                                    'expression': '收盘',
+                                    'inputs': {},
+                                }
+                            ],
+                            '158+39': [],
+                        }
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding='utf-8',
+            )
+            store_path.write_text(
+                json.dumps(
+                    {
+                        'version': 1,
+                        'feature_sets': {
+                            '39': {
+                                'disabled_builtin_factors': [],
+                                'builtin_overrides': [],
+                                'custom_factors': [],
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding='utf-8',
+            )
+
+            with patch('factor_store.build_factor_execution_plan', wraps=build_factor_execution_plan) as mocked:
+                first = resolve_factor_pipeline('39', str(store_path), str(registry_path))
+                second = resolve_factor_pipeline('39', str(store_path), str(registry_path))
+
+            self.assertEqual(mocked.call_count, 1)
+            self.assertEqual(first['factor_fingerprint'], second['factor_fingerprint'])
+            self.assertEqual(first['active_features'], second['active_features'])
 
 
 if __name__ == '__main__':
