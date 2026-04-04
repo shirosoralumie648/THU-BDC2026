@@ -501,13 +501,31 @@ def _candidate_factor_manifest_paths(
 ) -> list[str]:
     feature_path = Path(feature_input).resolve()
     candidates: list[str] = []
+    seen = set()
 
-    for path in sorted(feature_path.parent.glob('*.json')):
-        candidates.append(str(path))
+    def _append_candidate(path: Path) -> None:
+        path_str = str(path)
+        if path_str not in seen:
+            seen.add(path_str)
+            candidates.append(path_str)
 
     factors_cfg = pipeline_configs.get('factors', {}) if isinstance(pipeline_configs, dict) else {}
     build_manifest_cfg = factors_cfg.get('build_manifest', {}) if isinstance(factors_cfg, dict) else {}
     manifest_uri = str(build_manifest_cfg.get('output_uri', '') or '').strip()
+
+    if manifest_uri:
+        resolved_manifest_uri = manifest_uri
+        if feature_set_version:
+            resolved_manifest_uri = resolved_manifest_uri.replace('{feature_set_version}', feature_set_version)
+        if '{' not in resolved_manifest_uri and '}' not in resolved_manifest_uri:
+            manifest_path = Path(_resolve_path(resolved_manifest_uri))
+            if manifest_path.exists():
+                _append_candidate(manifest_path)
+            return candidates
+
+    for path in sorted(feature_path.parent.glob('*.json')):
+        _append_candidate(path)
+
     manifest_roots = []
     if manifest_uri:
         if '{feature_set_version}' in manifest_uri and feature_set_version:
@@ -518,15 +536,11 @@ def _candidate_factor_manifest_paths(
     if feature_set_version:
         manifest_roots.append(Path(_resolve_path(os.path.join('data', 'manifests', 'factor_build', feature_set_version))))
 
-    seen = set(candidates)
     for root in manifest_roots:
         if not root.exists():
             continue
         for path in sorted(root.rglob('*.json'), key=lambda item: item.stat().st_mtime, reverse=True):
-            path_str = str(path)
-            if path_str not in seen:
-                seen.add(path_str)
-                candidates.append(path_str)
+            _append_candidate(path)
     return candidates
 
 

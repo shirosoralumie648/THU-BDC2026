@@ -1,4 +1,5 @@
 import os
+import json
 import subprocess
 import sys
 import tempfile
@@ -137,6 +138,74 @@ class CliErrorPathTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 2)
             self.assertIn('解析 factor build manifest 失败', result.stderr)
+            self.assertNotIn('Traceback', result.stderr)
+
+    def test_build_dataset_ignores_unrelated_broken_json_when_manifest_uri_points_to_valid_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cfg_dir = tmp_path / 'config'
+            base_path = tmp_path / 'stock_data.csv'
+            feature_path = tmp_path / 'features.csv'
+            output_dir = tmp_path / 'out'
+            manifest_dir = tmp_path / 'manifests'
+            manifest_path = manifest_dir / 'factor_build.json'
+            unrelated_broken_json = tmp_path / 'broken.json'
+
+            manifest_dir.mkdir(parents=True, exist_ok=True)
+            _write_minimal_pipeline_config(cfg_dir, manifest_uri=str(manifest_path))
+            unrelated_broken_json.write_text('{broken', encoding='utf-8')
+
+            pd.DataFrame([{'股票代码': '000001.SZ', '日期': '2024-01-02', '收盘': 10.0}]).to_csv(
+                base_path,
+                index=False,
+                encoding='utf-8',
+            )
+            pd.DataFrame([{'股票代码': '000001.SZ', '日期': '2024-01-02', 'alpha_001': 1.0}]).to_csv(
+                feature_path,
+                index=False,
+                encoding='utf-8',
+            )
+
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        'action': 'build_factor_graph',
+                        'feature_set_version': 'v1',
+                        'factor_fingerprint': 'fp-valid',
+                        'output_paths': {
+                            'wide_csv': str(feature_path),
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding='utf-8',
+            )
+
+            cmd = [
+                sys.executable,
+                os.path.join(SRC_ROOT, 'manage_data.py'),
+                'build-dataset',
+                '--base-input',
+                str(base_path),
+                '--feature-input',
+                str(feature_path),
+                '--pipeline-config-dir',
+                str(cfg_dir),
+                '--output-dir',
+                str(output_dir),
+                '--train-start',
+                '2024-01-01',
+                '--train-end',
+                '2024-01-31',
+                '--test-start',
+                '2024-02-01',
+                '--test-end',
+                '2024-02-29',
+            ]
+            result = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
+
+            self.assertEqual(result.returncode, 0)
+            self.assertNotIn('解析 factor build manifest 失败', result.stderr)
             self.assertNotIn('Traceback', result.stderr)
 
     def test_ingest_get_reports_missing_job_without_traceback(self):
