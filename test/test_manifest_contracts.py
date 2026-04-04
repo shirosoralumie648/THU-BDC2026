@@ -311,8 +311,22 @@ class ManifestContractTests(unittest.TestCase):
             self.assertIn('csv', snapshot)
             self.assertEqual(snapshot['csv']['status'], 'error')
             self.assertEqual(snapshot['csv']['error_code'], 'csv_parse_error')
+            self.assertTrue(snapshot['csv']['message'])
             self.assertIn('errors', snapshot)
             self.assertEqual(snapshot['errors'][0]['code'], 'csv_parse_error')
+            self.assertEqual(snapshot['errors'][0]['message'], snapshot['csv']['message'])
+
+    def test_build_file_snapshot_marks_valid_csv_metadata_as_ok(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = Path(tmp) / 'ok.csv'
+            csv_path.write_text('股票代码,日期\n000001.SZ,2024-01-02\n', encoding='utf-8')
+
+            snapshot = build_file_snapshot(str(csv_path), inspect_csv=True)
+
+        self.assertTrue(snapshot['exists'])
+        self.assertIn('csv', snapshot)
+        self.assertEqual(snapshot['csv']['status'], 'ok')
+        self.assertNotIn('errors', snapshot)
 
     def test_build_file_snapshot_records_stat_failure_without_hiding_existing_file(self):
         with tempfile.TemporaryDirectory() as tmp:
