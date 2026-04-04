@@ -647,8 +647,10 @@ def inspect_csv_metadata(
     stock_candidates = list(stock_col_candidates or ['股票代码', 'stock_id', 'code', 'ts_code'])
     try:
         df = pd.read_csv(path)
-    except Exception as exc:
+    except (pd.errors.ParserError, pd.errors.EmptyDataError) as exc:
         return {'status': 'error', 'error_code': 'csv_parse_error', 'message': str(exc)}
+    except Exception as exc:
+        return {'status': 'error', 'error_code': 'csv_read_error', 'message': str(exc)}
 
     info = {
         'status': 'ok',

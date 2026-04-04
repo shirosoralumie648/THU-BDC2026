@@ -326,7 +326,25 @@ class ManifestContractTests(unittest.TestCase):
         self.assertTrue(snapshot['exists'])
         self.assertIn('csv', snapshot)
         self.assertEqual(snapshot['csv']['status'], 'ok')
+        self.assertNotIn('error_code', snapshot['csv'])
+        self.assertNotIn('message', snapshot['csv'])
         self.assertNotIn('errors', snapshot)
+
+    def test_build_file_snapshot_records_non_parse_csv_read_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = Path(tmp) / 'read-error.csv'
+            csv_path.write_text('股票代码,日期\n000001.SZ,2024-01-02\n', encoding='utf-8')
+
+            with patch('data_manager.pd.read_csv', side_effect=PermissionError('read boom')):
+                snapshot = build_file_snapshot(str(csv_path), inspect_csv=True)
+
+        self.assertTrue(snapshot['exists'])
+        self.assertIn('csv', snapshot)
+        self.assertEqual(snapshot['csv']['status'], 'error')
+        self.assertEqual(snapshot['csv']['error_code'], 'csv_read_error')
+        self.assertIn('errors', snapshot)
+        self.assertEqual(snapshot['errors'][0]['code'], 'csv_read_error')
+        self.assertIn('read boom', snapshot['errors'][0]['message'])
 
     def test_build_file_snapshot_records_stat_failure_without_hiding_existing_file(self):
         with tempfile.TemporaryDirectory() as tmp:
