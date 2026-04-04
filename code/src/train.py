@@ -456,6 +456,83 @@ def preprocess_val_data(df, feature_pipeline, stockid2idx=None):
 
 
 # 排序损失与目标变换已收敛到 objectives/*，训练脚本只保留编排逻辑。
+def _tensor_rank_normalize(values):
+    n = values.numel()
+    if n <= 1:
+        return torch.zeros_like(values)
+    order = torch.argsort(values)
+    ranks = torch.empty_like(order, dtype=torch.float32)
+    ranks[order] = torch.arange(n, device=values.device, dtype=torch.float32)
+    return (ranks / max(n - 1, 1)) * 2.0 - 1.0
+
+
+def _tensor_mad_bounds(values, mad_n=5.0, mad_min_scale=1e-6):
+    median = torch.median(values)
+    mad = torch.median(torch.abs(values - median))
+    robust_sigma = torch.clamp(mad * 1.4826, min=float(mad_min_scale))
+    lower = median - float(mad_n) * robust_sigma
+    upper = median + float(mad_n) * robust_sigma
+    return lower, upper
+
+
+def transform_targets_for_loss(valid_pred, valid_target):
+    """
+    为损失函数准备训练目标：
+    1) 极值样本 drop / clip；
+    2) 截面标准化（zscore/rank）。
+    """
+    mode = str(config.get('label_extreme_mode', 'none')).lower()
+    lower_q = float(config.get('label_extreme_lower_quantile', 0.05))
+    upper_q = float(config.get('label_extreme_upper_quantile', 0.95))
+    lower_q = max(0.0, min(lower_q, 0.49))
+    upper_q = min(1.0, max(upper_q, 0.51))
+    mad_n = float(config.get('label_mad_clip_n', 5.0))
+    mad_min_scale = float(config.get('label_mad_min_scale', 1e-6))
+
+    pred = valid_pred
+    target = valid_target
+
+    if mode in {'mad_drop', 'mad_drop_clip'} and target.numel() > 5:
+        lower, upper = _tensor_mad_bounds(target, mad_n=mad_n, mad_min_scale=mad_min_scale)
+        keep_mask = (target >= lower) & (target <= upper)
+        if int(keep_mask.sum().item()) >= 2:
+            pred = pred[keep_mask]
+            target = target[keep_mask]
+
+    if mode in {'mad_clip', 'mad_drop_clip'} and target.numel() > 2:
+        lower, upper = _tensor_mad_bounds(target, mad_n=mad_n, mad_min_scale=mad_min_scale)
+        target = torch.clamp(target, min=lower, max=upper)
+
+    if mode in {'drop', 'drop_clip'} and target.numel() > 5:
+        lower = torch.quantile(target, lower_q)
+        upper = torch.quantile(target, upper_q)
+        keep_mask = (target >= lower) & (target <= upper)
+        if int(keep_mask.sum().item()) >= 2:
+            pred = pred[keep_mask]
+            target = target[keep_mask]
+
+    if mode in {'clip', 'drop_clip'} and target.numel() > 2:
+        lower = torch.quantile(target, lower_q)
+        upper = torch.quantile(target, upper_q)
+        target = torch.clamp(target, min=lower, max=upper)
+
+    if config.get('use_cross_sectional_label_norm', True):
+        label_norm_method = str(config.get('label_cs_norm_method', 'zscore')).lower()
+        if label_norm_method == 'zscore':
+            mean = target.mean()
+            std = target.std(unbiased=False)
+            target = (target - mean) / (std + 1e-6)
+        elif label_norm_method == 'rank':
+            target = _tensor_rank_normalize(target)
+        else:
+            raise ValueError(f'不支持的 label_cs_norm_method: {label_norm_method}')
+
+        clip_value = config.get('label_cs_clip_value', None)
+        if clip_value is not None:
+            clip_value = float(clip_value)
+            target = torch.clamp(target, min=-clip_value, max=clip_value)
+
+    return pred, target
 
 
 def _rank_ic(valid_pred, valid_true_return):
@@ -1702,6 +1779,10 @@ def main():
         lambda_ndcg_topk=int(config.get('lambda_ndcg_topk', 50)),
         ic_weight=float(config.get('ic_weight', 0.0)),
         ic_mode=str(config.get('ic_mode', 'pearson')),
+        topk_focus_weight=float(config.get('topk_focus_weight', 0.0)),
+        topk_focus_k=int(config.get('topk_focus_k', 5)),
+        topk_focus_gain_mode=str(config.get('topk_focus_gain_mode', 'binary')),
+        topk_focus_normalize=config.get('topk_focus_normalize', True),
     )
     optimizer = torch.optim.AdamW(
         model.parameters(),

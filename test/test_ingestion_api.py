@@ -1,10 +1,11 @@
+import asyncio
 import os
 import sys
 import tempfile
 import unittest
 
+import httpx
 import pandas as pd
-from fastapi import HTTPException
 
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -15,13 +16,6 @@ if SRC_ROOT not in sys.path:
 from ingestion.api.app import create_app
 from ingestion.models import DatasetSpec
 from ingestion.service import IngestionService
-
-
-def _route_handler(app, path: str, method: str):
-    for route in app.routes:
-        if getattr(route, 'path', None) == path and method in getattr(route, 'methods', set()):
-            return route.endpoint
-    raise AssertionError(f'route not found: {method} {path}')
 
 
 class _FakeAdapter:
@@ -61,69 +55,84 @@ class IngestionApiTests(unittest.TestCase):
             runtime_root=runtime_root,
         )
 
-    def test_route_handlers_delegate_to_shared_service(self):
+    def test_http_endpoints_delegate_to_shared_service(self):
+        asyncio.run(self._exercise_http_endpoints())
+
+    async def _exercise_http_endpoints(self):
         with tempfile.TemporaryDirectory() as tmp:
             service = self._build_service(tmp)
             app = create_app(service=service, runtime_root=tmp)
-            health = _route_handler(app, '/health', 'GET')
-            create_job = _route_handler(app, '/ingestion/jobs', 'POST')
-            run_job = _route_handler(app, '/ingestion/jobs/{job_id}/run', 'POST')
-            replay_job = _route_handler(app, '/ingestion/replay', 'POST')
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url='http://testserver') as client:
+                health = await client.get('/health')
+                self.assertEqual(health.status_code, 200)
+                self.assertEqual(health.json(), {'status': 'ok'})
 
-            self.assertEqual(health(), {'status': 'ok'})
+                created = await client.post(
+                    '/ingestion/jobs',
+                    json={'dataset': 'market_bar_1d', 'start': '2024-01-01', 'end': '2024-01-31'},
+                )
+                self.assertEqual(created.status_code, 200)
+                payload = created.json()
+                self.assertEqual(payload['status'], 'queued')
 
-            created = create_job({'dataset': 'market_bar_1d', 'start': '2024-01-01', 'end': '2024-01-31'})
-            self.assertEqual(created['status'], 'queued')
+                job_id = payload['job_id']
+                run_resp = await client.post(f'/ingestion/jobs/{job_id}/run')
+                self.assertEqual(run_resp.status_code, 200)
+                self.assertEqual(run_resp.json()['status'], 'succeeded')
 
-            job_id = created['job_id']
-            run_resp = run_job(job_id)
-            self.assertEqual(run_resp['status'], 'succeeded')
+                replay_resp = await client.post('/ingestion/replay', json={'job_id': job_id})
+                self.assertEqual(replay_resp.status_code, 200)
+                replay_payload = replay_resp.json()
+                self.assertEqual(replay_payload['status'], 'succeeded')
+                self.assertEqual(replay_payload['result']['parent_job_id'], job_id)
 
-            replay_resp = replay_job({'job_id': job_id})
-            self.assertEqual(replay_resp['status'], 'succeeded')
-            self.assertEqual(replay_resp['result']['parent_job_id'], job_id)
+    def test_http_errors_map_to_stable_contract(self):
+        asyncio.run(self._exercise_http_errors())
 
-    def test_route_handlers_map_errors_to_stable_http_contract(self):
+    async def _exercise_http_errors(self):
         with tempfile.TemporaryDirectory() as tmp:
             service = self._build_service(tmp, adapter_name='failing_adapter', adapter=_FailingAdapter())
             app = create_app(service=service, runtime_root=tmp)
-            create_job = _route_handler(app, '/ingestion/jobs', 'POST')
-            get_job = _route_handler(app, '/ingestion/jobs/{job_id}', 'GET')
-            run_job = _route_handler(app, '/ingestion/jobs/{job_id}/run', 'POST')
-            replay_job = _route_handler(app, '/ingestion/replay', 'POST')
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url='http://testserver') as client:
+                create_missing = await client.post(
+                    '/ingestion/jobs',
+                    json={'dataset': 'missing', 'start': '2024-01-01', 'end': '2024-01-31'},
+                )
+                self.assertEqual(create_missing.status_code, 400)
+                self.assertEqual(
+                    create_missing.json()['detail'],
+                    {'code': 'invalid_request', 'message': 'unknown dataset: missing'},
+                )
 
-            with self.assertRaises(HTTPException) as create_ctx:
-                create_job({'dataset': 'missing', 'start': '2024-01-01', 'end': '2024-01-31'})
-            self.assertEqual(create_ctx.exception.status_code, 400)
-            self.assertEqual(
-                create_ctx.exception.detail,
-                {'code': 'invalid_request', 'message': 'unknown dataset: missing'},
-            )
+                get_missing = await client.get('/ingestion/jobs/job-missing')
+                self.assertEqual(get_missing.status_code, 404)
+                self.assertEqual(
+                    get_missing.json()['detail'],
+                    {'code': 'job_not_found', 'message': 'job not found: job-missing'},
+                )
 
-            with self.assertRaises(HTTPException) as get_ctx:
-                get_job('job-missing')
-            self.assertEqual(get_ctx.exception.status_code, 404)
-            self.assertEqual(
-                get_ctx.exception.detail,
-                {'code': 'job_not_found', 'message': 'job not found: job-missing'},
-            )
+                created = await client.post(
+                    '/ingestion/jobs',
+                    json={'dataset': 'market_bar_1d', 'start': '2024-01-01', 'end': '2024-01-31'},
+                )
+                self.assertEqual(created.status_code, 200)
+                job_id = created.json()['job_id']
 
-            created = create_job({'dataset': 'market_bar_1d', 'start': '2024-01-01', 'end': '2024-01-31'})
-            with self.assertRaises(HTTPException) as run_ctx:
-                run_job(created['job_id'])
-            self.assertEqual(run_ctx.exception.status_code, 400)
-            self.assertEqual(
-                run_ctx.exception.detail,
-                {'code': 'job_run_failed', 'message': 'provider unavailable'},
-            )
+                run_failed = await client.post(f'/ingestion/jobs/{job_id}/run')
+                self.assertEqual(run_failed.status_code, 400)
+                self.assertEqual(
+                    run_failed.json()['detail'],
+                    {'code': 'job_run_failed', 'message': 'provider unavailable'},
+                )
 
-            with self.assertRaises(HTTPException) as replay_ctx:
-                replay_job({})
-            self.assertEqual(replay_ctx.exception.status_code, 400)
-            self.assertEqual(
-                replay_ctx.exception.detail,
-                {'code': 'invalid_request', 'message': 'job_id is required'},
-            )
+                replay_missing_id = await client.post('/ingestion/replay', json={})
+                self.assertEqual(replay_missing_id.status_code, 400)
+                self.assertEqual(
+                    replay_missing_id.json()['detail'],
+                    {'code': 'invalid_request', 'message': 'job_id is required'},
+                )
 
 
 if __name__ == '__main__':

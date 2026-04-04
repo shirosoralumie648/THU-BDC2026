@@ -168,6 +168,10 @@ def _build_criterion():
         lambda_ndcg_topk=int(config.get("lambda_ndcg_topk", 50)),
         ic_weight=float(config.get("ic_weight", 0.0)),
         ic_mode=str(config.get("ic_mode", "pearson")),
+        topk_focus_weight=float(config.get("topk_focus_weight", 0.0)),
+        topk_focus_k=int(config.get("topk_focus_k", 5)),
+        topk_focus_gain_mode=str(config.get("topk_focus_gain_mode", "binary")),
+        topk_focus_normalize=config.get("topk_focus_normalize", True),
     )
 
 
