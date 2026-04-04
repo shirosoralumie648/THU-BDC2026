@@ -30,6 +30,10 @@ from ingestion.models import IngestionRequest
 from ingestion.service import IngestionService
 
 
+class FactorManifestError(ValueError):
+    """Raised when a factor build manifest cannot be parsed or violates expected shape."""
+
+
 def utc_timestamp() -> str:
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
@@ -462,10 +466,12 @@ def _extract_factor_fingerprint_from_manifest(
 ) -> str:
     try:
         payload = _load_json_payload(manifest_path)
-    except Exception:
-        return ''
+    except Exception as exc:
+        raise FactorManifestError(
+            f'解析 factor build manifest 失败: {manifest_path}'
+        ) from exc
     if not isinstance(payload, dict):
-        return ''
+        raise FactorManifestError(f'解析 factor build manifest 失败: {manifest_path}')
     if str(payload.get('action', '') or '').strip() not in {'', 'build_factor_graph'}:
         return ''
     manifest_feature_set_version = str(payload.get('feature_set_version', '') or '').strip()
