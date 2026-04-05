@@ -663,19 +663,35 @@ def build_csv_metadata_from_dataframe(
 
     date_col = infer_existing_column(df, date_candidates)
     if date_col is not None:
-        date_values = pd.to_datetime(df[date_col], errors='coerce')
-        date_values = date_values.dropna()
-        if not date_values.empty:
-            info['date_column'] = date_col
-            info['date_min'] = str(date_values.min().date())
-            info['date_max'] = str(date_values.max().date())
+        date_text = df[date_col].fillna('').astype(str).str.strip()
+        non_empty_dates = date_text[date_text != '']
+        if not non_empty_dates.empty:
+            canonical_dates = non_empty_dates.str[:10]
+            if bool(canonical_dates.str.match(r'^\d{4}-\d{2}-\d{2}$', na=False).all()):
+                info['date_column'] = date_col
+                info['date_min'] = str(canonical_dates.min())[:10]
+                info['date_max'] = str(canonical_dates.max())[:10]
+            else:
+                date_values = pd.to_datetime(df[date_col], errors='coerce')
+                date_values = date_values.dropna()
+                if not date_values.empty:
+                    info['date_column'] = date_col
+                    info['date_min'] = str(date_values.min().date())
+                    info['date_max'] = str(date_values.max().date())
 
     stock_col = infer_existing_column(df, stock_candidates)
     if stock_col is not None:
-        stock_norm = normalize_stock_code_series(df[stock_col]).replace('', np.nan).dropna()
-        if not stock_norm.empty:
-            info['stock_column'] = stock_col
-            info['stock_count'] = int(stock_norm.nunique())
+        stock_text = df[stock_col].fillna('').astype(str).str.strip().str.upper()
+        non_empty_stocks = stock_text[stock_text != '']
+        if not non_empty_stocks.empty:
+            if bool(non_empty_stocks.str.len().eq(6).all()) and bool(non_empty_stocks.str.isdigit().all()):
+                info['stock_column'] = stock_col
+                info['stock_count'] = int(non_empty_stocks.nunique())
+            else:
+                stock_norm = normalize_stock_code_series(df[stock_col]).replace('', np.nan).dropna()
+                if not stock_norm.empty:
+                    info['stock_column'] = stock_col
+                    info['stock_count'] = int(stock_norm.nunique())
 
     return info
 

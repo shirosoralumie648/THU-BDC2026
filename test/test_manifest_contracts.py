@@ -90,6 +90,33 @@ class ManifestContractTests(unittest.TestCase):
             },
         )
 
+    def test_build_csv_metadata_from_dataframe_skips_parsing_for_canonical_columns(self):
+        df = pd.DataFrame(
+            [
+                {'股票代码': '000001', '日期': '2024-01-02'},
+                {'股票代码': '000002', '日期': '2024-01-03'},
+                {'股票代码': '000001', '日期': '2024-01-04'},
+            ]
+        )
+
+        with patch('data_manager.normalize_stock_code_series', side_effect=AssertionError('unexpected normalize')):
+            with patch('data_manager.pd.to_datetime', side_effect=AssertionError('unexpected to_datetime')):
+                metadata = build_csv_metadata_from_dataframe(df)
+
+        self.assertEqual(
+            metadata,
+            {
+                'status': 'ok',
+                'row_count': 3,
+                'column_count': 2,
+                'date_column': '日期',
+                'date_min': '2024-01-02',
+                'date_max': '2024-01-04',
+                'stock_column': '股票代码',
+                'stock_count': 2,
+            },
+        )
+
     def test_ingestion_manifest_exposes_required_runtime_contract(self):
         job = IngestionJob(
             job_id='job-001',
