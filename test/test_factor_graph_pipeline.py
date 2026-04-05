@@ -11,9 +11,37 @@ import pandas as pd
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 SRC_ROOT = os.path.join(PROJECT_ROOT, 'code', 'src')
+if SRC_ROOT not in sys.path:
+    sys.path.insert(0, SRC_ROOT)
+
+from build_factor_graph import _build_macro_cutoff_frame
+from build_factor_graph import _compute_macro_series_asof
 
 
 class FactorGraphPipelineTests(unittest.TestCase):
+    def test_compute_macro_series_asof_forward_fill_does_not_revive_stale_values(self):
+        macro_cutoff_frame = _build_macro_cutoff_frame(
+            pd.Series(pd.to_datetime(['2024-01-01', '2024-01-02', '2024-01-03', '2024-01-04']))
+        )
+        macro_series_df = pd.DataFrame(
+            {
+                'available_time': pd.to_datetime(['2024-01-01 15:00:00']),
+                'value': [2.0],
+            }
+        )
+
+        out = _compute_macro_series_asof(
+            macro_cutoff_frame,
+            macro_series_df,
+            max_staleness_days=2,
+            fill_method='forward',
+        )
+
+        self.assertEqual(out['value'].iloc[0], 2.0)
+        self.assertEqual(out['value'].iloc[1], 2.0)
+        self.assertEqual(out['value'].iloc[2], 2.0)
+        self.assertTrue(pd.isna(out['value'].iloc[3]))
+
     def test_intraday_aggregation_source_no_longer_uses_groupby_apply(self):
         source_path = os.path.join(SRC_ROOT, 'build_factor_graph.py')
         with open(source_path, 'r', encoding='utf-8') as f:
@@ -28,6 +56,16 @@ class FactorGraphPipelineTests(unittest.TestCase):
 
         self.assertNotIn(
             "base_df = base_df.merge(series_asof.rename(columns={'value': output_col}), on='trade_date', how='left')",
+            source,
+        )
+
+    def test_macro_asof_join_source_no_longer_filters_full_macro_frame_per_series(self):
+        source_path = os.path.join(SRC_ROOT, 'build_factor_graph.py')
+        with open(source_path, 'r', encoding='utf-8') as f:
+            source = f.read()
+
+        self.assertNotIn(
+            "right = macro_df[macro_df['series_id'] == str(series_id)].copy()",
             source,
         )
 

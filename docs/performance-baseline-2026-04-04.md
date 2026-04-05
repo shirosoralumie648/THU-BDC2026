@@ -229,3 +229,78 @@ build_canonical_csv_metadata_from_dataframe(...) x2 0.004s
 
 - 进程内 `command_build_dataset(...)` 已低于之前记录的大约 `0.066s`，说明这批优化确实压到了 dataset build 本体，而不仅仅是 benchmark 偶然波动。
 - 当前端到端 benchmark 仍会受进程冷启动影响，所以更可靠的信号仍然是函数级 profile 与多次趋势对比。
+
+## Fifth Optimization Batch 2026-04-05
+
+- `code/src/build_factor_graph.py`
+  - 给 `macro_asof_join` 引入 `_build_macro_cutoff_frame(...)`，把交易日 cutoff 时间框架从“每个宏观节点重复构造”改成“一次构造，多次复用”。
+  - 在 `main(...)` 中预先按 `series_id` 构建 `macro_series_map`，节点循环里不再对整张 `macro_df` 反复做 `macro_df[macro_df['series_id'] == ...]` 过滤。
+  - 继续复用 `macro_join_frame` 聚合所有宏观列，最后一次性回并到 `base_df`。
+  - 修正 `_compute_macro_series_asof(...)` 的 staleness 边界：`fill_method=forward` 只允许填补有效窗口内的缺值，不能把超过 `max_staleness_days` 的旧值重新补活。
+- `test/test_factor_graph_pipeline.py`
+  - 新增源码级回归测试，约束 `macro_asof_join` 不再对完整 `macro_df` 做逐节点过滤。
+  - 新增行为级回归测试，约束 `forward fill` 不会穿透 `max_staleness_days` 边界。
+
+## Latest Observations After Fifth Batch 2026-04-05
+
+### Verified Commands
+
+```bash
+/home/shirosora/code_storage/THU-BDC2026/.venv/bin/python -m unittest test.test_factor_store_engine test.test_factor_graph_pipeline test.test_manifest_contracts test.test_hf_daily_factor_pipeline test.test_cli_error_paths test.test_ingestion_runtime -v
+/home/shirosora/code_storage/THU-BDC2026/.venv/bin/python code/src/benchmarks/factor_graph_path.py
+/home/shirosora/code_storage/THU-BDC2026/.venv/bin/python - <<'PY'
+import cProfile
+import pstats
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path('/home/shirosora/code_storage/THU-BDC2026/.worktrees/phase3-performance-baseline')
+SRC = ROOT / 'code' / 'src'
+sys.path.insert(0, str(SRC))
+
+from benchmarks.factor_graph_path import _write_benchmark_inputs
+from build_factor_graph import main
+
+with tempfile.TemporaryDirectory() as tmp:
+    tmp_path = Path(tmp)
+    base_path, hf_path, macro_path, output_path, manifest_path = _write_benchmark_inputs(tmp_path, num_stocks=8, num_days=30)
+    argv = [
+        '--pipeline-config-dir', './config',
+        '--feature-set-version', 'vbench',
+        '--base-input', str(base_path),
+        '--hf-daily-input', str(hf_path),
+        '--macro-input', str(macro_path),
+        '--output', str(output_path),
+        '--manifest-path', str(manifest_path),
+        '--strict',
+        '--run-id', 'profile-run',
+    ]
+    profiler = cProfile.Profile()
+    profiler.enable()
+    main(argv)
+    profiler.disable()
+    stats = pstats.Stats(profiler)
+    stats.sort_stats('cumtime').print_stats(40)
+PY
+```
+
+### Current Metrics
+
+| Benchmark | Wall Time | Previous Local Observation | Delta |
+| --- | ---: | ---: | ---: |
+| `factor_graph_path` single run | `0.4902s` | `0.6000s` | `-0.1098s` |
+| `factor_graph_path` 5-run mean | `0.4478s` | `0.6000s` | `-0.1522s` |
+| `factor_graph_path` 5-run range | `0.4191s - 0.4792s` | - | - |
+
+### Process-Level Profile Snapshot
+
+```text
+build_factor_graph.main(...)          0.197s
+_compute_expression_factors(...)      0.057s
+_compute_macro_series_asof(...) x3    0.017s
+load_pipeline_configs(...)            0.025s
+```
+
+- 这批优化命中的是真实业务热点，而不是参数解析或测试夹具；在补上 staleness 语义修复后，`factor_graph_path` 5 次观测仍稳定落在 `0.42s - 0.48s` 区间，说明性能收益没有被吞回去。
+- 当前 `macro_asof_join` 的主要浪费已经从“逐节点扫描整张 macro 表”收敛为“小规模 `merge_asof` 本身的必要成本”，后续更值得转向 `expression` 执行路径寻找下一刀。

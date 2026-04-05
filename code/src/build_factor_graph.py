@@ -727,22 +727,30 @@ def _load_macro_table(path: str) -> pd.DataFrame:
     return _canonicalize_macro_table(_load_table(path))
 
 
+def _build_macro_cutoff_frame(daily_dates: pd.Series) -> pd.DataFrame:
+    left = pd.DataFrame({'trade_date': pd.to_datetime(daily_dates).dropna().drop_duplicates().sort_values()})
+    if left.empty:
+        return left
+    # 使用交易日收盘 15:00 作为可用性截止时间
+    left['__cutoff_ts'] = left['trade_date'] + pd.Timedelta(hours=15)
+    return left.reset_index(drop=True)
+
+
 def _compute_macro_series_asof(
-    daily_dates: pd.Series,
-    macro_df: pd.DataFrame,
+    macro_cutoff_frame: pd.DataFrame,
+    macro_series_df: Optional[pd.DataFrame],
     *,
-    series_id: str,
     max_staleness_days: Optional[int],
     fill_method: str,
 ) -> pd.DataFrame:
-    left = pd.DataFrame({'trade_date': pd.to_datetime(daily_dates).dropna().drop_duplicates().sort_values()})
-    if left.empty:
+    if macro_cutoff_frame is None or macro_cutoff_frame.empty:
         return pd.DataFrame(columns=['trade_date', 'value'])
-    # 使用交易日收盘 15:00 作为可用性截止时间
-    left['__cutoff_ts'] = left['trade_date'] + pd.Timedelta(hours=15)
+    left = macro_cutoff_frame[['trade_date', '__cutoff_ts']].copy()
 
-    right = macro_df[macro_df['series_id'] == str(series_id)].copy()
-    right = right.sort_values('available_time')
+    if macro_series_df is None:
+        right = pd.DataFrame(columns=['available_time', 'value'])
+    else:
+        right = macro_series_df[['available_time', 'value']].copy()
     if right.empty:
         out = left[['trade_date']].copy()
         out['value'] = np.nan
@@ -756,13 +764,18 @@ def _compute_macro_series_asof(
         direction='backward',
     )
 
+    stale_mask = None
     if max_staleness_days is not None and int(max_staleness_days) > 0:
         delta_days = (merged['__cutoff_ts'] - merged['available_time']).dt.total_seconds() / 86400.0
-        merged.loc[delta_days > float(max_staleness_days), 'value'] = np.nan
+        stale_mask = delta_days > float(max_staleness_days)
+        merged.loc[stale_mask, 'value'] = np.nan
 
     fill_method = str(fill_method or '').strip().lower()
     if fill_method in {'forward', 'ffill'}:
         merged['value'] = merged['value'].ffill()
+        if stale_mask is not None:
+            # 过期值可以在有效区间内参与补值，但不能穿透 staleness 边界重新“复活”。
+            merged.loc[stale_mask, 'value'] = np.nan
 
     return merged[['trade_date', 'value']].copy()
 
@@ -1043,13 +1056,16 @@ def main(argv: Optional[List[str]] = None) -> None:
                 raise FileNotFoundError(msg)
             warnings.append(msg)
 
+    macro_cutoff_frame = None
     macro_join_frame = None
+    macro_series_map: Dict[str, pd.DataFrame] = {}
     if macro_df is not None:
-        macro_join_frame = pd.DataFrame(
-            {
-                'trade_date': pd.to_datetime(base_df['trade_date']).dropna().drop_duplicates().sort_values()
-            }
-        ).reset_index(drop=True)
+        macro_cutoff_frame = _build_macro_cutoff_frame(base_df['trade_date'])
+        macro_join_frame = macro_cutoff_frame[['trade_date']].copy()
+        macro_series_map = {
+            str(series_id): group[['available_time', 'value']].sort_values('available_time').reset_index(drop=True)
+            for series_id, group in macro_df.groupby('series_id', sort=False)
+        }
 
     for node in factor_nodes:
         node_id = str(node.get('id', '')).strip()
@@ -1124,10 +1140,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             else:
                 max_staleness = compute.get('max_staleness_days')
                 fill_method = str(compute.get('fill_method', 'forward'))
+                macro_series_df = macro_series_map.get(series_id)
                 series_asof = _compute_macro_series_asof(
-                    macro_join_frame['trade_date'] if macro_join_frame is not None else base_df['trade_date'],
-                    macro_df,
-                    series_id=series_id,
+                    macro_cutoff_frame if macro_cutoff_frame is not None else _build_macro_cutoff_frame(base_df['trade_date']),
+                    macro_series_df,
                     max_staleness_days=int(max_staleness) if max_staleness is not None else None,
                     fill_method=fill_method,
                 )
