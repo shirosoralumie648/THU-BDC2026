@@ -148,3 +148,44 @@ import time:      1089 |     436613 | build_factor_graph
 
 - 本轮观测里 `utils` 已不再出现在 `build_factor_graph` 的导入链上，说明 `factor_store -> utils` 顶层依赖已被切断。
 - 当前 `factor_graph_path` 的剩余主要成本来自 CLI 子进程与 `pandas` 冷启动，而不是 `factor_store` 自身导入。
+
+## Third Optimization Batch 2026-04-05
+
+- `code/src/data_manager.py`
+  - 新增 `build_canonical_csv_metadata_from_dataframe(...)`，专门服务已经规范化的输出表，避免重复做日期推断和股票代码归一化。
+- `code/src/build_factor_graph.py`
+  - `output_df` 的 manifest CSV metadata 改走 canonical helper。
+- `code/src/manage_data.py`
+  - `train_df` / `test_df` 的 dataset manifest CSV metadata 改走 canonical helper。
+- `test/test_manifest_contracts.py`
+  - 新增 canonical metadata helper 合同测试，以及 `manage_data` 输出侧调用约束。
+- `test/test_factor_graph_pipeline.py`
+  - 新增 `build_factor_graph` 输出侧调用约束。
+
+## Latest Observations After Third Batch 2026-04-05
+
+### Verified Commands
+
+```bash
+/home/shirosora/code_storage/THU-BDC2026/.venv/bin/python -m unittest test.test_factor_store_engine test.test_factor_graph_pipeline test.test_manifest_contracts test.test_hf_daily_factor_pipeline test.test_cli_error_paths test.test_ingestion_runtime -v
+/home/shirosora/code_storage/THU-BDC2026/.venv/bin/python code/src/benchmarks/factor_graph_path.py
+/home/shirosora/code_storage/THU-BDC2026/.venv/bin/python -c "import json, sys; sys.path.insert(0, 'code/src'); from benchmarks.training_path import run_dataset_build_benchmark; print(json.dumps(run_dataset_build_benchmark(), ensure_ascii=False))"
+```
+
+### Current Metrics
+
+| Benchmark | Wall Time | Previous Local Observation | Delta |
+| --- | ---: | ---: | ---: |
+| `factor_graph_path` | `0.5875s` | `0.7458s` | `-0.1583s` |
+| `dataset_build_path` | `0.4887s` | `0.5457s` | `-0.0570s` |
+
+### Process-Level Profile Snapshot
+
+```text
+build_factor_graph.main(...)                     0.220s
+build_csv_metadata_from_dataframe(...) x3       0.016s
+build_canonical_csv_metadata_from_dataframe(...) 0.003s
+```
+
+- 这一批优化没有改变 manifest 契约，只把“输出侧已经规范化的数据表”切换到更便宜的 metadata 路径。
+- `factor_graph_path` 和 `dataset_build_path` 都出现了正向改善，说明这条快路径不只是进程内 profile 好看，也体现在端到端 benchmark 上。
