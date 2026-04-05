@@ -189,3 +189,43 @@ build_canonical_csv_metadata_from_dataframe(...) 0.003s
 
 - 这一批优化没有改变 manifest 契约，只把“输出侧已经规范化的数据表”切换到更便宜的 metadata 路径。
 - `factor_graph_path` 和 `dataset_build_path` 都出现了正向改善，说明这条快路径不只是进程内 profile 好看，也体现在端到端 benchmark 上。
+
+## Fourth Optimization Batch 2026-04-05
+
+- `code/src/data_manager.py`
+  - 给 `build_csv_metadata_from_dataframe(...)` 增加 canonical fast-path：
+    - 当日期列已经是 `YYYY-MM-DD` 文本时，直接走字典序 `min/max`
+    - 当股票列已经是 6 位数字代码时，直接做 `nunique`
+  - 仅在不满足上述条件时才回退到 `pd.to_datetime(...)` 和 `normalize_stock_code_series(...)`
+- `test/test_manifest_contracts.py`
+  - 新增回归测试，约束 canonical 列不会再触发 `pd.to_datetime` / `normalize_stock_code_series`
+
+## Latest Observations After Fourth Batch 2026-04-05
+
+### Verified Commands
+
+```bash
+/home/shirosora/code_storage/THU-BDC2026/.venv/bin/python -m unittest test.test_factor_store_engine test.test_factor_graph_pipeline test.test_manifest_contracts test.test_hf_daily_factor_pipeline test.test_cli_error_paths test.test_ingestion_runtime -v
+/home/shirosora/code_storage/THU-BDC2026/.venv/bin/python code/src/benchmarks/factor_graph_path.py
+/home/shirosora/code_storage/THU-BDC2026/.venv/bin/python -c "import json, sys; sys.path.insert(0, 'code/src'); from benchmarks.training_path import run_dataset_build_benchmark; print(json.dumps(run_dataset_build_benchmark(), ensure_ascii=False))"
+```
+
+### Current Metrics
+
+| Benchmark | Wall Time | Notes |
+| --- | ---: | --- |
+| `factor_graph_path` | `0.6000s` | 与上一刀 `0.5875s` 接近，仍显著优于 `0.7458s` 以前的观测 |
+| `dataset_build_path` | `0.3856s` | 单次观测明显下降，CLI 噪声仍存在 |
+
+### Process-Level Profile Snapshot
+
+```text
+build_factor_graph.main(...)     0.199s
+command_build_dataset(...)       0.045s
+load_pipeline_configs(...)       0.014s
+build_csv_metadata_from_dataframe(...) 0.007s
+build_canonical_csv_metadata_from_dataframe(...) x2 0.004s
+```
+
+- 进程内 `command_build_dataset(...)` 已低于之前记录的大约 `0.066s`，说明这批优化确实压到了 dataset build 本体，而不仅仅是 benchmark 偶然波动。
+- 当前端到端 benchmark 仍会受进程冷启动影响，所以更可靠的信号仍然是函数级 profile 与多次趋势对比。
