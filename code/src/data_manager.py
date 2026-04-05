@@ -680,6 +680,45 @@ def build_csv_metadata_from_dataframe(
     return info
 
 
+def build_canonical_csv_metadata_from_dataframe(
+    df: pd.DataFrame,
+    *,
+    date_col: str = '日期',
+    stock_col: str = '股票代码',
+) -> Dict:
+    info = {
+        'status': 'ok',
+        'row_count': int(len(df)),
+        'column_count': int(len(df.columns)),
+    }
+
+    if date_col in df.columns:
+        date_series = df[date_col]
+        if pd.api.types.is_datetime64_any_dtype(date_series):
+            date_values = date_series.dropna()
+            if not date_values.empty:
+                info['date_column'] = date_col
+                info['date_min'] = str(date_values.min().date())
+                info['date_max'] = str(date_values.max().date())
+        else:
+            date_text = date_series.fillna('').astype(str).str.strip()
+            non_empty_mask = date_text != ''
+            if bool(non_empty_mask.any()):
+                normalized_dates = date_text[non_empty_mask].str[:10]
+                info['date_column'] = date_col
+                info['date_min'] = str(normalized_dates.min())[:10]
+                info['date_max'] = str(normalized_dates.max())[:10]
+
+    if stock_col in df.columns:
+        stock_text = df[stock_col].fillna('').astype(str).str.strip()
+        non_empty_mask = stock_text != ''
+        if bool(non_empty_mask.any()):
+            info['stock_column'] = stock_col
+            info['stock_count'] = int(stock_text[non_empty_mask].nunique())
+
+    return info
+
+
 def inspect_csv_metadata(
     path: str,
     *,

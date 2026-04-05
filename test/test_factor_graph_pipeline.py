@@ -31,6 +31,16 @@ class FactorGraphPipelineTests(unittest.TestCase):
             source,
         )
 
+    def test_factor_graph_source_uses_canonical_metadata_helper_for_output(self):
+        source_path = os.path.join(SRC_ROOT, 'build_factor_graph.py')
+        with open(source_path, 'r', encoding='utf-8') as f:
+            source = f.read()
+
+        self.assertIn(
+            'output_csv_meta = build_canonical_csv_metadata_from_dataframe(',
+            source,
+        )
+
     def test_build_factor_graph_end_to_end(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

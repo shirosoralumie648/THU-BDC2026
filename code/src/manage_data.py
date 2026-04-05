@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from config import config
+from data_manager import build_canonical_csv_metadata_from_dataframe
 from data_manager import build_csv_metadata_from_dataframe
 from data_manager import build_file_snapshot
 from data_manager import build_stock_industry_index
@@ -725,8 +726,8 @@ def command_build_dataset(args: argparse.Namespace) -> int:
         mirror.parent.mkdir(parents=True, exist_ok=True)
         test_df.to_csv(mirror, index=False)
 
-    train_csv_meta = build_csv_metadata_from_dataframe(train_df)
-    test_csv_meta = build_csv_metadata_from_dataframe(test_df)
+    train_csv_meta = build_canonical_csv_metadata_from_dataframe(train_df)
+    test_csv_meta = build_canonical_csv_metadata_from_dataframe(test_df)
 
     manifest_target = (
         _resolve_path(args.manifest_path)

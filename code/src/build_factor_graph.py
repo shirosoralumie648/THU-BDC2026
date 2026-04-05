@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 
 from config import config
+from data_manager import build_canonical_csv_metadata_from_dataframe
 from data_manager import build_csv_metadata_from_dataframe
 from data_manager import build_file_snapshot
 from data_manager import infer_existing_column
@@ -1228,7 +1229,11 @@ def main(argv: Optional[List[str]] = None) -> None:
     output_path = _resolve_path(output_path)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     output_df.to_csv(output_path, index=False, encoding='utf-8')
-    output_csv_meta = build_csv_metadata_from_dataframe(output_df)
+    output_csv_meta = build_canonical_csv_metadata_from_dataframe(
+        output_df,
+        date_col='日期',
+        stock_col='股票代码',
+    )
 
     build_manifest_cfg = factors_cfg.get('build_manifest', {}) if isinstance(factors_cfg, dict) else {}
     manifest_path = str(args.manifest_path or '').strip()

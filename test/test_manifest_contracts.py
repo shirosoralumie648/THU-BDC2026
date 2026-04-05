@@ -16,6 +16,7 @@ if SRC_ROOT not in sys.path:
     sys.path.insert(0, SRC_ROOT)
 
 from data_manager import build_csv_metadata_from_dataframe
+from data_manager import build_canonical_csv_metadata_from_dataframe
 from data_manager import build_file_snapshot
 
 from ingestion.manifests import build_ingestion_manifest
@@ -64,6 +65,31 @@ def _write_minimal_pipeline_config(cfg_dir: Path):
 
 
 class ManifestContractTests(unittest.TestCase):
+    def test_build_canonical_csv_metadata_from_dataframe_for_normalized_output(self):
+        df = pd.DataFrame(
+            [
+                {'股票代码': '000001', '日期': '2024-01-02', 'f_ret_1d': 0.1},
+                {'股票代码': '000002', '日期': '2024-01-03', 'f_ret_1d': 0.2},
+                {'股票代码': '000001', '日期': '2024-01-04', 'f_ret_1d': 0.3},
+            ]
+        )
+
+        metadata = build_canonical_csv_metadata_from_dataframe(df)
+
+        self.assertEqual(
+            metadata,
+            {
+                'status': 'ok',
+                'row_count': 3,
+                'column_count': 3,
+                'date_column': '日期',
+                'date_min': '2024-01-02',
+                'date_max': '2024-01-04',
+                'stock_column': '股票代码',
+                'stock_count': 2,
+            },
+        )
+
     def test_ingestion_manifest_exposes_required_runtime_contract(self):
         job = IngestionJob(
             job_id='job-001',
@@ -386,6 +412,19 @@ class ManifestContractTests(unittest.TestCase):
         self.assertIn('errors', snapshot)
         self.assertEqual(snapshot['errors'][0]['code'], 'stat_failed')
         self.assertIn('stat boom', snapshot['errors'][0]['message'])
+
+    def test_manage_data_source_uses_canonical_metadata_helper_for_dataset_outputs(self):
+        source_path = Path(SRC_ROOT) / 'manage_data.py'
+        source = source_path.read_text(encoding='utf-8')
+
+        self.assertIn(
+            'train_csv_meta = build_canonical_csv_metadata_from_dataframe(train_df)',
+            source,
+        )
+        self.assertIn(
+            'test_csv_meta = build_canonical_csv_metadata_from_dataframe(test_df)',
+            source,
+        )
 
 
 if __name__ == '__main__':
