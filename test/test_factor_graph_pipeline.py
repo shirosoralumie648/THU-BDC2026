@@ -15,10 +15,46 @@ if SRC_ROOT not in sys.path:
     sys.path.insert(0, SRC_ROOT)
 
 from build_factor_graph import _build_macro_cutoff_frame
+from build_factor_graph import _compute_intraday_nodes_from_minute
 from build_factor_graph import _compute_macro_series_asof
+
+try:
+    from factor_pipeline.macro import _build_macro_cutoff_frame as build_macro_cutoff_frame_shared
+    from factor_pipeline.macro import _compute_macro_series_asof as compute_macro_series_asof_shared
+except ImportError as exc:
+    FACTOR_PIPELINE_MACRO_IMPORT_ERROR = exc
+    build_macro_cutoff_frame_shared = None
+    compute_macro_series_asof_shared = None
+else:
+    FACTOR_PIPELINE_MACRO_IMPORT_ERROR = None
+
+try:
+    from factor_pipeline.intraday import _compute_intraday_nodes_from_minute as compute_intraday_nodes_from_minute_shared
+except ImportError as exc:
+    FACTOR_PIPELINE_INTRADAY_IMPORT_ERROR = exc
+    compute_intraday_nodes_from_minute_shared = None
+else:
+    FACTOR_PIPELINE_INTRADAY_IMPORT_ERROR = None
 
 
 class FactorGraphPipelineTests(unittest.TestCase):
+    def test_build_factor_graph_reuses_factor_pipeline_macro_helpers(self):
+        self.assertIsNone(
+            FACTOR_PIPELINE_MACRO_IMPORT_ERROR,
+            f'factor_pipeline.macro should expose macro helpers: {FACTOR_PIPELINE_MACRO_IMPORT_ERROR}',
+        )
+        self.assertIs(_build_macro_cutoff_frame, build_macro_cutoff_frame_shared)
+        self.assertIs(_compute_macro_series_asof, compute_macro_series_asof_shared)
+        self.assertEqual(_compute_macro_series_asof.__module__, 'factor_pipeline.macro')
+
+    def test_build_factor_graph_reuses_factor_pipeline_intraday_helpers(self):
+        self.assertIsNone(
+            FACTOR_PIPELINE_INTRADAY_IMPORT_ERROR,
+            f'factor_pipeline.intraday should expose intraday helpers: {FACTOR_PIPELINE_INTRADAY_IMPORT_ERROR}',
+        )
+        self.assertIs(_compute_intraday_nodes_from_minute, compute_intraday_nodes_from_minute_shared)
+        self.assertEqual(_compute_intraday_nodes_from_minute.__module__, 'factor_pipeline.intraday')
+
     def test_compute_macro_series_asof_forward_fill_does_not_revive_stale_values(self):
         macro_cutoff_frame = _build_macro_cutoff_frame(
             pd.Series(pd.to_datetime(['2024-01-01', '2024-01-02', '2024-01-03', '2024-01-04']))

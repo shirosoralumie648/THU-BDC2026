@@ -116,8 +116,9 @@
 兼容入口：通过 ingestion service 拉取日线数据：
 - 默认走 `market_bar_1d` 数据集配置；
 - 当前 provider 为 BaoStock 日线适配器；
-- 输出为 runtime root 下的 ingestion manifest 与 curated 数据文件；
-- 适合做原始数据抓取或 provider 连通性验证，不直接替代训练入口。
+- 默认会通过 compat bridge 导出 legacy 形态的 `stock_data.csv`，并写出桥接 manifest；
+- `runtime-root` 用于保存底层 ingestion job 的运行时目录、source manifest 与中间产物；
+- 适合做原始数据抓取或 provider 连通性验证，不会直接覆写 `train.csv` / `test.csv`。
 
 ### [split_train_test.py](data/split_train_test.py)
 数据切分脚本：
@@ -203,28 +204,14 @@ sh test.sh
 
 ## Release Acceptance Commands
 
-下面这一组是当前仓库的 release gate。建议按顺序执行，并保留日志：
-
-```bash
-./.venv/bin/python code/src/manage_data.py validate-pipeline-config --config-dir ./config
-./.venv/bin/python -m unittest discover -s test -p 'test_*.py' -v
-./.venv/bin/python code/src/manage_data.py build-factor-graph \
-  --pipeline-config-dir ./config \
-  --feature-set-version v1 \
-  --base-input ./data/stock_data.csv
-./.venv/bin/python code/src/manage_data.py build-dataset \
-  --pipeline-config-dir ./config \
-  --feature-set-version v1 \
-  --base-input ./data/stock_data.csv \
-  --feature-input ./data/datasets/features/train_features_v1.csv \
-  --output-dir ./data
-sh train.sh
-sh test.sh
-./.venv/bin/python test/score_self.py
-docker compose up
-```
+当前 canonical release gate 已冻结到 [docs/release-gate-2026-04.md](/home/shirosora/code_storage/THU-BDC2026/.worktrees/stage15-closeout/docs/release-gate-2026-04.md)。请以该文档中的命令顺序为准，并保留执行日志。
 
 说明：
+- `validate-pipeline-config` 在 release gate 中使用 `--profile release`。
+- `build-dataset` 在 release gate 中使用 `--profile release`，会对 dataset manifest 做 fail-fast 校验。
+- benchmark smoke pack 已纳入 release gate，不再只依赖单测替代。
+- CPU-only 环境下的 release gate 会显式设置 `THU_BDC_CONFIG_OVERRIDE_PATH=./config/runtime/release_cpu_smoke.json` 后再执行 `train.sh` / `test.sh`，该 override 会限制 epoch/batch 上限并下调模型宽度，且使用独立 smoke 模型目录，确保验收路径可完成且不污染完整训练工件。
+- GPU 环境若要执行完整训练，可不使用该 override。
 - `build-factor-graph` 的默认宽表输出路径来自 `config/factors.yaml`，当前默认会渲染到 `./data/datasets/features/train_features_v1.csv`。
 - `build-dataset` 会生成 dataset build manifest，训练和推理会优先读取 manifest 指向的数据文件。
 - `output/result.csv` 仍然是本地与赛事提交流程中的最终预测产物。
@@ -305,7 +292,8 @@ python get_stock_data.py \
 ```
 
 说明：
-- 该命令会把 provider 抓取结果写到 `runtime-root` 下的 ingestion 运行目录，而不是直接覆写 `data/train.csv`。
+- 该命令会优先走 compat bridge，并把 canonical 日线结果导出为配置目标下的 `stock_data.csv`；如需显式指定输出位置，可传 `--output-path` 与 `--manifest-path`。
+- `runtime-root` 用于保存底层 ingestion runtime 和 source manifest，不会直接覆写 `data/train.csv` / `data/test.csv`。
 - 若你只是复现当前 baseline，优先使用仓库内已有的 `data/stock_data.csv` / `data/train.csv` / `data/test.csv`。
 
 高频数据聚合为日因子（示例）：

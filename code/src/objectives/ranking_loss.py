@@ -5,8 +5,27 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from config import config
+from objectives.aux_losses import compute_volatility_huber_loss
 
-__all__ = ['PortfolioOptimizationLoss']
+__all__ = ['PortfolioOptimizationLoss', 'build_portfolio_optimization_loss']
+
+
+def build_portfolio_optimization_loss(runtime_config=None):
+    runtime_config = runtime_config if runtime_config is not None else config
+    return PortfolioOptimizationLoss(
+        temperature=float(runtime_config.get('loss_temperature', 10.0)),
+        listnet_weight=float(runtime_config.get('listnet_weight', 1.0)),
+        pairwise_weight=float(runtime_config.get('pairwise_weight', 1.0)),
+        lambda_ndcg_weight=float(runtime_config.get('lambda_ndcg_weight', 1.0)),
+        lambda_ndcg_topk=int(runtime_config.get('lambda_ndcg_topk', 50)),
+        ic_weight=float(runtime_config.get('ic_weight', 0.0)),
+        ic_mode=str(runtime_config.get('ic_mode', 'pearson')),
+        topk_focus_weight=float(runtime_config.get('topk_focus_weight', 0.0)),
+        topk_focus_k=int(runtime_config.get('topk_focus_k', 5)),
+        topk_focus_gain_mode=str(runtime_config.get('topk_focus_gain_mode', 'binary')),
+        topk_focus_normalize=runtime_config.get('topk_focus_normalize', True),
+        runtime_config=runtime_config,
+    )
 
 
 class PortfolioOptimizationLoss(nn.Module):
@@ -243,11 +262,8 @@ class PortfolioOptimizationLoss(nn.Module):
         )
 
         if volatility_targets is not None and volatility_pred is not None:
-            vol_mask = ~torch.isnan(volatility_targets)
-            if vol_mask.any():
-                total_loss = total_loss + F.huber_loss(
-                    volatility_pred[vol_mask],
-                    volatility_targets[vol_mask],
-                )
+            volatility_loss = compute_volatility_huber_loss(volatility_pred, volatility_targets)
+            if volatility_loss is not None:
+                total_loss = total_loss + volatility_loss
 
         return total_loss

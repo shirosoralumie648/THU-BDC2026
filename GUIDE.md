@@ -78,7 +78,8 @@ python get_stock_data.py \
 说明：
 
 - 这个命令当前通过 ingestion service 调 BaoStock provider。
-- 输出会落到 `runtime-root` 下的 ingestion runtime 目录，不会直接覆写 `data/train.csv`。
+- 该入口会优先走 compat bridge，并把 canonical 日线结果导出为 legacy `stock_data.csv`；如需显式指定输出位置，可传 `--output-path` 与 `--manifest-path`。
+- `runtime-root` 用于保存底层 ingestion runtime、source manifest 与中间产物，不会直接覆写 `data/train.csv` / `data/test.csv`。
 - 如果只是复现 baseline，优先使用仓库现有数据文件。
 
 # 自评与验收
@@ -91,26 +92,15 @@ python get_stock_data.py \
 
 自评脚本会读取 `output/result.csv`，并把参考结果写到 `temp/tmp.csv`。
 
-如果要执行当前 release gate，完整命令顺序如下：
+如果要执行当前 release gate，请以 [docs/release-gate-2026-04.md](/home/shirosora/code_storage/THU-BDC2026/.worktrees/stage15-closeout/docs/release-gate-2026-04.md) 为唯一 canonical 命令清单。
 
-```bash
-./.venv/bin/python code/src/manage_data.py validate-pipeline-config --config-dir ./config
-./.venv/bin/python -m unittest discover -s test -p 'test_*.py' -v
-./.venv/bin/python code/src/manage_data.py build-factor-graph \
-  --pipeline-config-dir ./config \
-  --feature-set-version v1 \
-  --base-input ./data/stock_data.csv
-./.venv/bin/python code/src/manage_data.py build-dataset \
-  --pipeline-config-dir ./config \
-  --feature-set-version v1 \
-  --base-input ./data/stock_data.csv \
-  --feature-input ./data/datasets/features/train_features_v1.csv \
-  --output-dir ./data
-sh train.sh
-sh test.sh
-./.venv/bin/python test/score_self.py
-docker compose up
-```
+关键变化：
+
+- `validate-pipeline-config` 使用 `--profile release`
+- `build-dataset` 使用 `--profile release`
+- benchmark smoke pack 已纳入 release gate
+- CPU-only 环境执行 release gate 时，应按 canonical 命令显式设置 `THU_BDC_CONFIG_OVERRIDE_PATH=./config/runtime/release_cpu_smoke.json` 后再运行 `train.sh` / `test.sh`；该 override 会压缩 epoch/batch 和模型宽度
+- GPU 环境如需完整训练，可不使用该 override
 
 Release checklist：
 

@@ -17,14 +17,13 @@ from experiments.metrics import build_strategy_candidates as build_strategy_cand
 from experiments.runner import build_strategy_export_payload
 from experiments.runner import summarize_experiment_run
 from experiments.splits import build_rolling_validation_folds as build_rolling_validation_folds_shared
-from models.rank_model import StockTransformer
-from objectives.ranking_loss import PortfolioOptimizationLoss
-from train import build_validation_fold_loaders
-from train import evaluate_ranking_folds
-from train import preprocess_val_data
-from train import set_seed
-from train import split_train_val_by_last_month
-from utils import resolve_feature_indices
+from objectives.ranking_loss import build_portfolio_optimization_loss
+from training.loops import evaluate_ranking_folds
+from training.preprocessing import preprocess_val_data
+from training.runtime import build_rank_model
+from training.runtime import set_seed
+from training.validation import build_validation_fold_loaders
+from training.validation import split_train_val_by_last_month
 
 
 def _resolve_device(device_name: str) -> torch.device:
@@ -158,23 +157,6 @@ def _load_checkpoint_with_compat(model, model_path: str, device: torch.device):
     if load_result.unexpected_keys:
         print(f"模型包含额外参数（将忽略）: {load_result.unexpected_keys[:10]}")
 
-
-def _build_criterion():
-    return PortfolioOptimizationLoss(
-        temperature=float(config.get("loss_temperature", 10.0)),
-        listnet_weight=float(config.get("listnet_weight", 1.0)),
-        pairwise_weight=float(config.get("pairwise_weight", 1.0)),
-        lambda_ndcg_weight=float(config.get("lambda_ndcg_weight", 1.0)),
-        lambda_ndcg_topk=int(config.get("lambda_ndcg_topk", 50)),
-        ic_weight=float(config.get("ic_weight", 0.0)),
-        ic_mode=str(config.get("ic_mode", "pearson")),
-        topk_focus_weight=float(config.get("topk_focus_weight", 0.0)),
-        topk_focus_k=int(config.get("topk_focus_k", 5)),
-        topk_focus_gain_mode=str(config.get("topk_focus_gain_mode", "binary")),
-        topk_focus_normalize=config.get("topk_focus_normalize", True),
-    )
-
-
 def build_reselected_strategy_payload(
     *,
     run_summary,
@@ -274,26 +256,14 @@ def main():
     else:
         print(f"当前设备: {device}")
 
-    model = StockTransformer(input_dim=len(features), config=config, num_stocks=len(stockid2idx))
-    market_context_feature_names = config.get(
-        "market_gating_context_feature_names",
-        [
-            "market_median_return",
-            "market_total_turnover_log",
-            "market_limit_up_count_log",
-            "market_limit_up_ratio",
-        ],
-    )
-    market_context_indices = resolve_feature_indices(features, market_context_feature_names)
-    model.set_market_context_feature_indices(market_context_indices)
     stock_industry_idx = _load_stock_industry_idx(output_dir, len(stockid2idx))
-    model.set_stock_industry_index(torch.from_numpy(stock_industry_idx))
+    model = build_rank_model(features, len(stockid2idx), stock_industry_idx, config)
     _attach_prior_graph_if_available(model, output_dir, len(stockid2idx))
     _load_checkpoint_with_compat(model, model_path, device)
     model.to(device)
     model.eval()
 
-    criterion = _build_criterion()
+    criterion = build_portfolio_optimization_loss(config)
     strategy_candidates = build_strategy_candidates_shared(config)
     print("候选持仓策略:", ", ".join(candidate["name"] for candidate in strategy_candidates))
 

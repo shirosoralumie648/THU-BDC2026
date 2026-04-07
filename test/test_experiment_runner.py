@@ -15,7 +15,26 @@ from experiments.metrics import build_strategy_candidates as build_strategy_cand
 from experiments.runner import build_strategy_export_payload
 from experiments.runner import summarize_experiment_run
 from experiments.splits import build_rolling_validation_folds
+from objectives.ranking_loss import build_portfolio_optimization_loss as build_portfolio_optimization_loss_shared
 import reselect_strategy
+
+try:
+    from training.runtime import build_rank_model as build_rank_model_shared
+    from training.loops import evaluate_ranking_folds as evaluate_ranking_folds_shared
+    from training.preprocessing import preprocess_val_data as preprocess_val_data_shared
+    from training.runtime import set_seed as set_seed_shared
+    from training.validation import build_validation_fold_loaders as build_validation_fold_loaders_shared
+    from training.validation import split_train_val_by_last_month as split_train_val_by_last_month_shared
+except ImportError as exc:
+    RESELECT_SHARED_IMPORT_ERROR = exc
+    build_rank_model_shared = None
+    evaluate_ranking_folds_shared = None
+    preprocess_val_data_shared = None
+    set_seed_shared = None
+    build_validation_fold_loaders_shared = None
+    split_train_val_by_last_month_shared = None
+else:
+    RESELECT_SHARED_IMPORT_ERROR = None
 
 
 class RollingValidationSplitTests(unittest.TestCase):
@@ -71,6 +90,19 @@ class ExperimentRunnerTests(unittest.TestCase):
             'validation_mode': 'rolling',
             'label_horizon': 5,
         }
+
+    def test_reselect_strategy_uses_shared_training_helpers(self):
+        self.assertIsNone(
+            RESELECT_SHARED_IMPORT_ERROR,
+            f'reselect_strategy shared helper imports should resolve: {RESELECT_SHARED_IMPORT_ERROR}',
+        )
+        self.assertIs(reselect_strategy.build_portfolio_optimization_loss, build_portfolio_optimization_loss_shared)
+        self.assertIs(reselect_strategy.build_rank_model, build_rank_model_shared)
+        self.assertIs(reselect_strategy.set_seed, set_seed_shared)
+        self.assertIs(reselect_strategy.preprocess_val_data, preprocess_val_data_shared)
+        self.assertIs(reselect_strategy.build_validation_fold_loaders, build_validation_fold_loaders_shared)
+        self.assertIs(reselect_strategy.evaluate_ranking_folds, evaluate_ranking_folds_shared)
+        self.assertIs(reselect_strategy.split_train_val_by_last_month, split_train_val_by_last_month_shared)
 
     def test_summarize_experiment_run_reports_best_strategy_and_fold_diagnostics(self):
         eval_metrics = {

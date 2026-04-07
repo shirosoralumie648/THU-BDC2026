@@ -208,6 +208,56 @@ class CliErrorPathTests(unittest.TestCase):
             self.assertNotIn('解析 factor build manifest 失败', result.stderr)
             self.assertNotIn('Traceback', result.stderr)
 
+    def test_build_dataset_release_profile_requires_factor_fingerprint_without_traceback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cfg_dir = tmp_path / 'config'
+            base_path = tmp_path / 'stock_data.csv'
+            feature_path = tmp_path / 'features.csv'
+            output_dir = tmp_path / 'out'
+
+            _write_minimal_pipeline_config(cfg_dir)
+            pd.DataFrame([{'股票代码': '000001.SZ', '日期': '2024-01-02', '收盘': 10.0}]).to_csv(
+                base_path,
+                index=False,
+                encoding='utf-8',
+            )
+            pd.DataFrame([{'股票代码': '000001.SZ', '日期': '2024-01-02', 'alpha_001': 1.0}]).to_csv(
+                feature_path,
+                index=False,
+                encoding='utf-8',
+            )
+
+            cmd = [
+                sys.executable,
+                os.path.join(SRC_ROOT, 'manage_data.py'),
+                'build-dataset',
+                '--base-input',
+                str(base_path),
+                '--feature-input',
+                str(feature_path),
+                '--pipeline-config-dir',
+                str(cfg_dir),
+                '--output-dir',
+                str(output_dir),
+                '--train-start',
+                '2024-01-01',
+                '--train-end',
+                '2024-01-31',
+                '--test-start',
+                '2024-02-01',
+                '--test-end',
+                '2024-02-29',
+                '--profile',
+                'release',
+            ]
+            result = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('release profile preflight failed', result.stderr)
+            self.assertIn('factor_fingerprint', result.stderr)
+            self.assertNotIn('Traceback', result.stderr)
+
     def test_ingest_get_reports_missing_job_without_traceback(self):
         with tempfile.TemporaryDirectory() as tmp:
             runtime_root = Path(tmp) / 'runtime'

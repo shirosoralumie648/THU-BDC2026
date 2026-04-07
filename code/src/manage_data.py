@@ -17,7 +17,9 @@ from data_manager import build_csv_metadata_from_dataframe
 from data_manager import build_file_snapshot
 from data_manager import build_stock_industry_index
 from data_manager import collect_data_sources
+from data_manager import apply_execution_profile
 from data_manager import infer_existing_column
+from data_manager import load_train_dataset_from_build_manifest
 from data_manager import load_stock_to_industry_map
 from data_manager import normalize_stock_code_series
 from data_manager import resolve_data_root
@@ -86,6 +88,12 @@ def parse_args() -> argparse.Namespace:
         action='store_true',
         help='严格模式：有 warning 也返回非 0',
     )
+    pipeline_parser.add_argument(
+        '--profile',
+        choices=['dev', 'release'],
+        default='dev',
+        help='执行档位：release 会将 warning 视为失败，默认 dev',
+    )
 
     index_parser = subparsers.add_parser('industry-index', help='构建股票-行业索引映射')
     index_parser.add_argument(
@@ -152,6 +160,12 @@ def parse_args() -> argparse.Namespace:
         '--pipeline-config-dir',
         default='./config',
         help='多源管道配置目录（含 datasets.yaml/factors.yaml/storage.yaml），默认 ./config',
+    )
+    build_parser.add_argument(
+        '--profile',
+        choices=['dev', 'release'],
+        default='dev',
+        help='执行档位：release 会开启 manifest fail-fast 与 lineage 约束',
     )
     build_parser.add_argument(
         '--output-dir',
@@ -321,7 +335,7 @@ def command_validate_pipeline_config(args: argparse.Namespace) -> int:
 
     if report.errors:
         return 2
-    if bool(args.strict) and report.warnings:
+    if (bool(args.strict) or str(getattr(args, 'profile', 'dev')).strip().lower() == 'release') and report.warnings:
         return 3
     return 0
 
@@ -572,12 +586,14 @@ def command_build_dataset(args: argparse.Namespace) -> int:
     if not os.path.exists(base_input):
         raise FileNotFoundError(f'未找到基础输入文件: {base_input}')
 
+    profile = str(getattr(args, 'profile', 'dev') or 'dev').strip().lower() or 'dev'
     output_dir = _resolve_path(args.output_dir)
     os.makedirs(output_dir, exist_ok=True)
     build_id = str(args.build_id or '').strip() or datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     factor_fingerprint = str(args.factor_fingerprint or '').strip()
 
     pipeline_validation = {'valid': False, 'errors': [], 'warnings': []}
+    pipeline_configs = {}
     feature_input = str(args.feature_input or '').strip()
     try:
         pipeline_configs, report = load_pipeline_configs(
@@ -649,6 +665,14 @@ def command_build_dataset(args: argparse.Namespace) -> int:
                 pipeline_validation['warnings'].append(
                     f'未能从 factor build manifest 解析 factor_fingerprint: {feature_input}'
                 )
+
+        if profile == 'release':
+            validation_messages = [
+                *list(pipeline_validation.get('errors', []) or []),
+                *list(pipeline_validation.get('warnings', []) or []),
+            ]
+            if validation_messages:
+                raise ValueError('release profile preflight failed:\n- ' + '\n- '.join(validation_messages))
 
         factor_df = _load_factor_dataframe(feature_input)
         if feature_input.lower().endswith('.csv'):
@@ -746,6 +770,7 @@ def command_build_dataset(args: argparse.Namespace) -> int:
             'feature_set_version': str(args.feature_set_version),
             'factor_fingerprint': factor_fingerprint,
             'join_how': str(args.join_how),
+            'profile': profile,
             'train_start': str(train_start.date()),
             'train_end': str(train_end.date()),
             'test_start': str(test_start.date()),
@@ -808,6 +833,23 @@ def command_build_dataset(args: argparse.Namespace) -> int:
         manifest,
         filename=Path(manifest_target).name,
     )
+
+    if profile == 'release':
+        release_config = apply_execution_profile(
+            config,
+            profile='release',
+            feature_set_version=str(args.feature_set_version),
+            factor_fingerprint=factor_fingerprint,
+        )
+        release_config['output_dir'] = output_dir
+        release_config['dataset_build_manifest_path'] = saved_manifest
+        try:
+            load_train_dataset_from_build_manifest(
+                release_config,
+                {'factor_fingerprint': factor_fingerprint} if factor_fingerprint else {},
+            )
+        except Exception as exc:
+            raise ValueError(f'release profile dataset manifest 校验失败: {exc}') from exc
 
     print('数据集构建完成:')
     print(f'  - train: {train_path} rows={len(train_df)} stocks={train_df["股票代码"].nunique() if not train_df.empty else 0}')

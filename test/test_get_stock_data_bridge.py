@@ -5,6 +5,8 @@ import types
 import unittest
 from argparse import Namespace
 from pathlib import Path
+from unittest import mock
+import json
 
 import pandas as pd
 
@@ -13,7 +15,10 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 SRC_ROOT = os.path.join(PROJECT_ROOT, 'code', 'src')
 if SRC_ROOT not in sys.path:
     sys.path.insert(0, SRC_ROOT)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
+import get_stock_data
 from ingestion.compat import run_stock_data_bridge
 
 
@@ -101,6 +106,43 @@ class StockDataBridgeTests(unittest.TestCase):
             self.assertAlmostEqual(float(df.loc[0, '涨跌额']), 0.5, places=6)
             self.assertGreater(float(df.loc[0, '振幅']), 0.0)
             self.assertTrue(os.path.exists(result['manifest_path']))
+
+    def test_script_main_delegates_to_compat_bridge(self):
+        args = Namespace(
+            pipeline_config_dir='./config',
+            dataset_name='market_bar_1d',
+            start_date='2024-01-01',
+            end_date='2024-01-31',
+            index_date='2024-01-31',
+            output_path='./temp/stock_data.csv',
+            manifest_path='',
+            adjustflag='1',
+            legacy_direct_fetch=False,
+            runtime_root='./temp/ingestion_runtime',
+        )
+        bridge_result = {
+            'job_id': 'job-bridge',
+            'status': 'succeeded',
+            'output_path': '/tmp/stock_data.csv',
+            'manifest_path': '/tmp/data_manifest_stock_fetch.json',
+        }
+
+        with mock.patch.object(get_stock_data, 'parse_args', return_value=args):
+            with mock.patch.object(
+                get_stock_data,
+                'run_stock_data_bridge',
+                create=True,
+                return_value=bridge_result,
+            ) as bridge_mock:
+                with mock.patch('builtins.print') as print_mock:
+                    get_stock_data.main()
+
+        bridge_mock.assert_called_once()
+        called_args, called_kwargs = bridge_mock.call_args
+        self.assertIs(called_args[0], args)
+        self.assertTrue(os.path.isabs(called_kwargs['runtime_root']))
+        self.assertTrue(called_kwargs['runtime_root'].endswith(os.path.join('temp', 'ingestion_runtime')))
+        self.assertEqual(json.loads(print_mock.call_args.args[0]), bridge_result)
 
 
 if __name__ == '__main__':

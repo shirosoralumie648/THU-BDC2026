@@ -32,11 +32,27 @@ class DatasetManifestLinkageTests(unittest.TestCase):
             features_dir.mkdir(parents=True, exist_ok=True)
 
             (cfg_dir / 'datasets.yaml').write_text('version: 1\ndatasets: {}\n', encoding='utf-8')
-            (cfg_dir / 'storage.yaml').write_text('version: 1\nlayers: {raw: {}, curated: {}, feature_long: {}, feature_wide: {}, datasets: {}, manifests: {}}\n', encoding='utf-8')
+            (cfg_dir / 'storage.yaml').write_text(
+                '\n'.join(
+                    [
+                        'version: 1',
+                        'layers:',
+                        '  raw: {uri_template: "data/raw/{dataset}/{run_id}.csv"}',
+                        '  curated: {uri_template: "data/curated/{dataset}/{run_id}.csv"}',
+                        '  feature_long: {uri_template: "data/feature_long/{dataset}.csv"}',
+                        '  feature_wide: {uri_template: "data/feature_wide/{dataset}.csv"}',
+                        '  datasets: {uri_template: "data/datasets/{dataset}.csv"}',
+                        '  manifests: {uri_template: "data/manifests/{dataset}.json"}',
+                    ]
+                ),
+                encoding='utf-8',
+            )
             (cfg_dir / 'factors.yaml').write_text(
                 '\n'.join(
                     [
                         'version: 1',
+                        'layer_order: []',
+                        'factor_nodes: []',
                         'factor_views:',
                         '  - layout: wide',
                         '    export:',
@@ -139,10 +155,135 @@ class DatasetManifestLinkageTests(unittest.TestCase):
                 config,
                 {'factor_fingerprint': 'different-fingerprint'},
             )
-            self.assertTrue(
-                any('当前激活因子指纹不一致' in msg for msg in mismatch_info.get('errors', [])),
-                msg=str(mismatch_info),
+            self.assertEqual(mismatch_info.get('errors'), [], msg=str(mismatch_info))
+
+            strict_compare_config = dict(config)
+            strict_compare_config['dataset_manifest_compare_active_factor_fingerprint'] = True
+            _, strict_mismatch_info = load_train_dataset_from_build_manifest(
+                strict_compare_config,
+                {'factor_fingerprint': 'different-fingerprint'},
             )
+            self.assertTrue(
+                any('当前激活因子指纹不一致' in msg for msg in strict_mismatch_info.get('errors', [])),
+                msg=str(strict_mismatch_info),
+            )
+
+    def test_build_dataset_release_profile_accepts_valid_factor_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cfg_dir = tmp_path / 'config'
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            output_dir = tmp_path / 'dataset_output'
+            output_dir.mkdir(parents=True, exist_ok=True)
+            features_dir = tmp_path / 'features'
+            features_dir.mkdir(parents=True, exist_ok=True)
+
+            (cfg_dir / 'datasets.yaml').write_text('version: 1\ndatasets: {}\n', encoding='utf-8')
+            (cfg_dir / 'storage.yaml').write_text(
+                '\n'.join(
+                    [
+                        'version: 1',
+                        'layers:',
+                        '  raw: {uri_template: "data/raw/{dataset}/{run_id}.csv"}',
+                        '  curated: {uri_template: "data/curated/{dataset}/{run_id}.csv"}',
+                        '  feature_long: {uri_template: "data/feature_long/{dataset}.csv"}',
+                        '  feature_wide: {uri_template: "data/feature_wide/{dataset}.csv"}',
+                        '  datasets: {uri_template: "data/datasets/{dataset}.csv"}',
+                        '  manifests: {uri_template: "data/manifests/{dataset}.json"}',
+                    ]
+                ),
+                encoding='utf-8',
+            )
+            (cfg_dir / 'factors.yaml').write_text(
+                '\n'.join(
+                    [
+                        'version: 1',
+                        'layer_order: []',
+                        'factor_nodes: []',
+                        'factor_views:',
+                        '  - layout: wide',
+                        '    export:',
+                        '      csv_compat_uri: data/datasets/features/{feature_set_version}.csv',
+                        'build_manifest:',
+                        '  output_uri: data/manifests/factor_build/{feature_set_version}/{run_date}/{run_id}.json',
+                    ]
+                ),
+                encoding='utf-8',
+            )
+
+            base_path = tmp_path / 'stock_data.csv'
+            feature_path = features_dir / 'features.csv'
+            factor_manifest_path = features_dir / 'factor_build_manifest.json'
+
+            pd.DataFrame(
+                [
+                    {'股票代码': '000001.SZ', '日期': '2024-01-02', '收盘': 10.0},
+                    {'股票代码': '000001.SZ', '日期': '2024-01-03', '收盘': 10.5},
+                    {'股票代码': '000001.SZ', '日期': '2024-03-11', '收盘': 10.9},
+                ]
+            ).to_csv(base_path, index=False, encoding='utf-8')
+            pd.DataFrame(
+                [
+                    {'股票代码': '000001.SZ', '日期': '2024-01-02', 'f_ret_1d': 0.01},
+                    {'股票代码': '000001.SZ', '日期': '2024-01-03', 'f_ret_1d': 0.02},
+                    {'股票代码': '000001.SZ', '日期': '2024-03-11', 'f_ret_1d': 0.03},
+                ]
+            ).to_csv(feature_path, index=False, encoding='utf-8')
+            factor_manifest_path.write_text(
+                json.dumps(
+                    {
+                        'action': 'build_factor_graph',
+                        'feature_set_version': 'vrelease',
+                        'factor_fingerprint': 'release-fingerprint',
+                        'output_paths': {
+                            'wide_csv': str(feature_path),
+                            'wide_csv_snapshot': {'path': str(feature_path)},
+                        },
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding='utf-8',
+            )
+
+            cmd = [
+                sys.executable,
+                os.path.join(SRC_ROOT, 'manage_data.py'),
+                'build-dataset',
+                '--base-input',
+                str(base_path),
+                '--feature-input',
+                str(feature_path),
+                '--feature-set-version',
+                'vrelease',
+                '--pipeline-config-dir',
+                str(cfg_dir),
+                '--output-dir',
+                str(output_dir),
+                '--train-start',
+                '2024-01-01',
+                '--train-end',
+                '2024-01-31',
+                '--test-start',
+                '2024-03-01',
+                '--test-end',
+                '2024-03-31',
+                '--profile',
+                'release',
+            ]
+            result = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise AssertionError(
+                    f'release build-dataset failed: rc={result.returncode}\nstdout={result.stdout}\nstderr={result.stderr}'
+                )
+
+            manifest_path = output_dir / 'data_manifest_dataset_build.json'
+            self.assertTrue(manifest_path.exists())
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                manifest = json.load(f)
+
+            self.assertEqual(manifest.get('feature_set_version'), 'vrelease')
+            self.assertEqual(manifest.get('factor_fingerprint'), 'release-fingerprint')
 
     def test_load_train_dataset_from_build_manifest_reuses_cached_manifest_payload(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,0 +1,22 @@
+{
+  "output_dir": "./model/60_158+39_release_cpu_smoke",
+  "batch_size": 1,
+  "sequence_length": 60,
+  "d_model": 64,
+  "nhead": 2,
+  "num_layers": 1,
+  "dim_feedforward": 128,
+  "num_epochs": 1,
+  "max_train_batches_per_epoch": 1,
+  "max_eval_batches_per_fold": 1,
+  "rolling_val_num_folds": 1,
+  "feature_engineer_processes": 4,
+  "use_cross_stock_attention_mask": false,
+  "use_temporal_cross_stock_attention": false,
+  "use_multi_scale_temporal": false,
+  "use_market_gating": false,
+  "use_multitask_volatility": false,
+  "factor_ablation_enabled": false,
+  "use_amp": false,
+  "use_amp_eval": false
+}

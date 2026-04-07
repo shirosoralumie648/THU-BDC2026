@@ -33,21 +33,19 @@ def is_valid_prediction(prediction_data):
     if not (0 <= float(weight_sum) <= 1.0):
         raise ValueError(f"预测结果不合法：权重之和必须为0到1之间. 当前权重之和为 {weight_sum}.")
 
-
-def calculate_return(group):
-    start = group.iloc[0]
-    end = group.iloc[-1]
-    return (end['开盘'] - start['开盘']) / start['开盘']
-
-
 def calculate_predict_weight_score(output_data, test_data):
     # 选择输出指定的5个股票
     test_data = test_data[test_data['股票代码'].isin(output_data['股票代码'])]
     # 只选最后五个记录
     test_data = test_data.groupby('股票代码').tail(5)
     # 分别计算收益率
-    group = test_data.groupby('股票代码')
-    result = group.apply(calculate_return).reset_index().rename(columns={0: '收益率'})
+    result = (
+        test_data.groupby('股票代码', sort=False)['开盘']
+        .agg(['first', 'last'])
+        .reset_index()
+    )
+    result['收益率'] = (result['last'] - result['first']) / result['first']
+    result = result[['股票代码', '收益率']]
     result = result.merge(output_data, on='股票代码')
     # 计算加权收益率
     final_score = (result['收益率'] * result['权重']).sum()

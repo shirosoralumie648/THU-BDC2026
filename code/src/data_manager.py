@@ -189,6 +189,31 @@ def resolve_dataset_path(config: Dict, filename: str, *, for_write: bool = False
     return candidates[0]
 
 
+def apply_execution_profile(
+    config: Dict,
+    *,
+    profile: str = 'dev',
+    feature_set_version: str = '',
+    factor_fingerprint: str = '',
+) -> Dict:
+    merged = copy.deepcopy(config) if isinstance(config, dict) else {}
+    normalized_profile = str(profile or 'dev').strip().lower() or 'dev'
+    merged['execution_profile'] = normalized_profile
+
+    if normalized_profile != 'release':
+        return merged
+
+    merged['use_dataset_build_manifest'] = True
+    merged['dataset_manifest_strict'] = True
+    merged['dataset_manifest_require_factor_fingerprint'] = True
+
+    if feature_set_version and not str(merged.get('expected_feature_set_version', '')).strip():
+        merged['expected_feature_set_version'] = str(feature_set_version)
+    if factor_fingerprint and not str(merged.get('expected_factor_fingerprint', '')).strip():
+        merged['expected_factor_fingerprint'] = str(factor_fingerprint)
+    return merged
+
+
 def _is_truthy(value) -> bool:
     if isinstance(value, bool):
         return value
@@ -296,6 +321,9 @@ def load_train_dataset_from_build_manifest(
     expected_feature_set_version = str(config.get('expected_feature_set_version', '')).strip()
     expected_factor_fingerprint = str(config.get('expected_factor_fingerprint', '')).strip()
     require_manifest_fingerprint = _is_truthy(config.get('dataset_manifest_require_factor_fingerprint', False))
+    compare_active_factor_fingerprint = _is_truthy(
+        config.get('dataset_manifest_compare_active_factor_fingerprint', False)
+    )
 
     if expected_feature_set_version:
         if not info['feature_set_version']:
@@ -325,7 +353,7 @@ def load_train_dataset_from_build_manifest(
                 f'{pipeline_factor_fingerprint} != {expected_factor_fingerprint}'
             )
 
-    if info['factor_fingerprint'] and pipeline_factor_fingerprint:
+    if compare_active_factor_fingerprint and info['factor_fingerprint'] and pipeline_factor_fingerprint:
         if info['factor_fingerprint'] != pipeline_factor_fingerprint:
             info['errors'].append(
                 f'manifest 因子指纹与当前激活因子指纹不一致: '
